@@ -247,3 +247,98 @@ Test-Case 'ts: reference directive variants are Fixed' {
 Test-Case 'html: <!--> and <!---> are empty comments' {
     Assert-Equal (Get-HtmlTexts 'a<!-->b<!--->c<!-- d -->') @('<!-->', '<!--->', '<!-- d -->')
 }
+
+# ---- shell / Makefile ------------------------------------------------------
+
+function Get-ShTexts { param([string]$Text, [switch]$NoHeredoc) $t = Get-RcCommentsShell -Text $Text -NoHeredoc:$NoHeredoc; $r = @(); foreach ($x in $t) { $r += $Text.Substring($x.Start, $x.End - $x.Start) }; return , $r }
+function Get-MkTexts { param([string]$Text) $t = Get-RcCommentsMakefile -Text $Text; $r = @(); foreach ($x in $t) { $r += $Text.Substring($x.Start, $x.End - $x.Start) }; return , $r }
+
+Test-Case 'sh: dispatcher wires shell and makefile' {
+    Assert-Equal (Get-RcComments -Language 'shell' -Text "# a`n").Count 1
+    Assert-Equal (Get-RcComments -Language 'makefile' -Text "# a`n").Count 1
+}
+Test-Case 'sh: shebang is Fixed only at the very start' {
+    $t = Get-RcCommentsShell -Text "#!/bin/sh`n#!/bin/sh`n"
+    Assert-Equal @($t | ForEach-Object { $_.Fixed }) @($true, $false)
+}
+Test-Case 'sh: word-start rule for #' {
+    Assert-Equal (Get-ShTexts 'echo $# a#b;#c') @('#c')
+    Assert-Equal (Get-ShTexts "a&#x`nb|#y`n(#z") @('#x', '#y', '#z')
+    Assert-Equal (Get-ShTexts 'echo \# "#" ''#'' `#` # d') @('# d')
+}
+Test-Case 'sh: -Offset shifts token positions' {
+    $t = Get-RcCommentsShell -Text 'ab # c' -Offset 10
+    Assert-Equal $t[0].Start 13; Assert-Equal $t[0].End 16
+}
+Test-Case 'sh: -NoHeredoc ignores << ; heredoc handling otherwise' {
+    Assert-Equal (Get-ShTexts "cat <<EOF # x`n# body`nEOF`n# y" -NoHeredoc) @('# x', '# body', '# y')
+    Assert-Equal (Get-ShTexts "cat <<EOF # x`n# body`nEOF`n# y") @('# x', '# y')
+}
+Test-Case 'sh: several heredocs on one line, <<- with tabs' {
+    $t = "cat <<A <<-B # c`nbody # 1`nA`n`t# body2`n`tB`n# d"
+    Assert-Equal (Get-ShTexts $t) @('# c', '# d')
+}
+Test-Case 'sh: heredoc terminator must match exactly (CRLF tolerated)' {
+    Assert-Equal (Get-ShTexts "cat <<E`r`nEOF`r`n# not`r`nE`r`n# yes") @('# yes')
+}
+Test-Case 'sh: nested contexts' {
+    Assert-Equal (Get-ShTexts "x=`"`$(echo `"`$(echo `"#`" # in2`n)`" # in1`n)`" # out") @('# in2', '# in1', '# out')
+    Assert-Equal (Get-ShTexts 'x=${a:-$(echo ")")} # c') @('# c')
+}
+Test-Case 'sh: errors are code 3 with the start line' {
+    $e = Get-ErrOf { Get-RcCommentsShell -Text "a`nb`necho 'x`n" }
+    Assert-Equal $e.Code 3; Assert-Equal $e.Line 3
+    $e = Get-ErrOf { Get-RcCommentsShell -Text "a`n`"x`n" }
+    Assert-Equal $e.Code 3; Assert-Equal $e.Line 2
+    $e = Get-ErrOf { Get-RcCommentsShell -Text "a`n`necho `$(x`n" }
+    Assert-Equal $e.Code 3; Assert-Equal $e.Line 3
+    $e = Get-ErrOf { Get-RcCommentsShell -Text "a`ncat <<END`nx`n" }
+    Assert-Equal $e.Code 3; Assert-Equal $e.Line 2
+    $e = Get-ErrOf { Get-RcCommentsShell -Text "a`necho `${x`n" }
+    Assert-Equal $e.Code 3; Assert-Equal $e.Line 2
+}
+Test-Case 'mk: comment rules' {
+    Assert-Equal (Get-MkTexts "A = 1 # c`nB = a\#b`nC = 2 # x \`n more`nD") @('# c', ('# x \' + "`n" + ' more'))
+    Assert-Equal (Get-MkTexts "`techo `"#`" # c`n`techo `$`$# # d") @('# c', '# d')
+}
+Test-Case 'mk: define / endef untouched, nesting, missing endef is 3 with start line' {
+    Assert-Equal (Get-MkTexts "define A`n# x`ndefine B`n# y`nendef`n# z`nendef`n# out") @('# out')
+    $e = Get-ErrOf { Get-RcCommentsMakefile -Text "a = 1`n`n override export define X`n# c`n" }
+    Assert-Equal $e.Code 3; Assert-Equal $e.Line 3
+}
+Test-Case 'mk: recipe shell errors report the file line' {
+    $e = Get-ErrOf { Get-RcCommentsMakefile -Text "a:`n`techo ok`n`techo 'x \`n y`n" }
+    Assert-Equal $e.Code 3; Assert-Equal $e.Line 3
+}
+Test-Case 'mk: file named Makefile (no extension) is processed' {
+    $d = New-TestDir
+    $in = Join-Path $d 'Makefile'
+    $fx = Join-Path $global:RcTestState.Fixtures 'makefile'
+    [IO.File]::Copy((Join-Path $fx 'basic.in.mk'), $in)
+    $r = Invoke-RcFile -Settings (New-TestSettings) -Path $in -OutPath (Join-Path $d 'out/Makefile') -DisplayPath 'Makefile'
+    Assert-Equal $r.ExitCode 0 $r.Message
+    Assert-BytesEqual ([IO.File]::ReadAllBytes((Join-Path $d 'out/Makefile'))) ([IO.File]::ReadAllBytes((Join-Path $fx 'basic.expected.mk')))
+}
+Test-Case 'perf: ~100KB shell file' {
+    $block = @'
+#!/bin/sh
+# header comment
+name="a # b"; echo "$(echo "x" # c1
+)" ${name#a} $# # trailing
+cat <<EOF # c2
+# body $(not run)
+EOF
+case $x in a) echo '#' ;; # c3
+esac
+for f in `ls`; do echo "$f" # c4
+done
+
+'@
+    $r = Measure-Lang $block 'sh'
+    Assert-True ($r.Removed -gt 1000) 'many comments'
+}
+Test-Case 'perf: ~100KB Makefile' {
+    $block = "CC = gcc # compiler`nall: dep # c`n`t@echo `"#`" # s`n`techo a \`n`t  b # c2`n# whole`n`n"
+    $r = Measure-Lang $block 'mk'
+    Assert-True ($r.Removed -gt 1000) 'many comments'
+}

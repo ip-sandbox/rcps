@@ -179,3 +179,36 @@ Test-Case 'rewrite: JoinWithSpace=$false joins neighbours without a space' {
     $l.Add((New-TestToken $t '/* c */' 'block')); $l.Add((New-TestToken $t '/* d */' 'block'))
     Assert-Equal (Convert-RcText -Text $t -Tokens $l -JoinWithSpace $false) "x`ny" 'rules 1,2 still apply'
 }
+
+# ---- spec rules 7 and 8 (line continuation) --------------------------------
+
+Test-Case 'rewrite rule 7: comment-only line after a backslash line becomes an empty line' {
+    Assert-Equal (Test-Rewrite "echo a \`n# c`necho b`n" @(, @('# c', 'line'))) "echo a \`n`necho b`n"
+    Assert-Equal (Test-Rewrite "#define X 1 \`r`n// c`r`nint y;`r`n" @(, @('// c', 'line'))) "#define X 1 \`r`n`r`nint y;`r`n" 'CRLF kept'
+}
+Test-Case 'rewrite rule 7: multi-line token, only the first line becomes empty' {
+    $t = "#define A 1 \`n// x \`n+2`nint z;`n"
+    Assert-Equal (Test-Rewrite $t @(, @("// x \`n+2", 'line'))) "#define A 1 \`n`nint z;`n"
+}
+Test-Case 'rewrite rule 7: consecutive deleted lines' {
+    $t = "a \`n// 1`n// 2`nb`n"
+    Assert-Equal (Test-Rewrite $t @(@('// 1', 'line'), @('// 2', 'line'))) "a \`n`nb`n"
+}
+Test-Case 'rewrite rule 7: not triggered when the previous line does not end with a backslash' {
+    Assert-Equal (Test-Rewrite "a`n// c`nb`n" @(, @('// c', 'line'))) "a`nb`n"
+    Assert-Equal (Test-Rewrite "a \`nb`n// c`nc`n" @(, @('// c', 'line'))) "a \`nb`nc`n"
+}
+Test-Case 'rewrite rule 7: previous line ends with a backslash after its own comment was removed' {
+    Assert-Equal (Test-Rewrite "a \// x`n// y`nb`n" @(@('// x', 'line'), @('// y', 'line'))) "a \`n`nb`n"
+    Assert-Equal (Test-Rewrite "a \ // x`n// y`nb`n" @(@('// x', 'line'), @('// y', 'line'))) "a \ `nb`n" 'a space after the backslash is not a continuation'
+}
+Test-Case 'rewrite rule 7: very last line without a line ending emits nothing' {
+    Assert-Equal (Test-Rewrite "a \`n// c" @(, @('// c', 'line'))) 'a \'
+}
+Test-Case 'rewrite rule 7: kept comment line is emitted unchanged' {
+    Assert-Equal (Test-Rewrite "a \`n// c`nb`n" @(, @('// c', 'line')) @(0)) "a \`n// c`nb`n"
+}
+Test-Case 'rewrite rule 8: trailing whitespace is not trimmed when the line ends with a backslash' {
+    Assert-Equal (Test-Rewrite "echo a \ # c`necho b`n" @(, @('# c', 'line'))) "echo a \ `necho b`n"
+    Assert-Equal (Test-Rewrite "x = 1 /* c */  `n" @(, @('/* c */', 'block'))) "x = 1`n" 'normal trim still applies'
+}
