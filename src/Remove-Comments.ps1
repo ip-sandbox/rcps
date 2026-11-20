@@ -66,7 +66,7 @@ function Resolve-RcPath {
     param([string]$PathText, [string]$BaseDir)
     if (-not $BaseDir) { $BaseDir = (Get-Location).ProviderPath }
     if ([IO.Path]::IsPathRooted($PathText)) { return [IO.Path]::GetFullPath($PathText) }
-    return [IO.Path]::GetFullPath((Join-Path $BaseDir $PathText))
+    return [IO.Path]::GetFullPath([IO.Path]::Combine($BaseDir, $PathText))
 }
 
 # JSON object -> hashtable of its keys (case-sensitive key check, "_" keys ignored)

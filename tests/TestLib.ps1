@@ -131,12 +131,13 @@ function New-TestToken {
 
 # runs the script out of process; returns @{ ExitCode; Out; Err }
 function Invoke-TestCli {
-    param([string[]]$Arguments, [string]$WorkDir)
+    param([string[]]$Arguments, [string]$WorkDir, [string]$Script)
     $exe = (Get-Process -Id $PID).Path
     $all = New-Object 'System.Collections.Generic.List[string]'
     $all.Add('-NoProfile')
     if ($env:OS -eq 'Windows_NT') { $all.Add('-ExecutionPolicy'); $all.Add('Bypass') }
-    $all.Add('-File'); $all.Add($global:RcTestState.SrcScript)
+    if (-not $Script) { $Script = $global:RcTestState.SrcScript }
+    $all.Add('-File'); $all.Add($Script)
     foreach ($a in $Arguments) { $all.Add($a) }
     $quoted = $all | ForEach-Object { '"' + $_ + '"' }
     $psi = New-Object System.Diagnostics.ProcessStartInfo

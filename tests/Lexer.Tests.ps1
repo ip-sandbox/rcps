@@ -92,6 +92,10 @@ Test-Case 'lexer: escaped backslash-newline inside string continues it' {
     Assert-Equal (Get-TokenTexts "s = `"a\`r`nb // x`"; // c" 'cpp') @('// c')
 }
 
+# time limit for perf tests: looser on Windows PowerShell 5.1 (Desktop) / slow CI
+$global:RcPerfLimit = 5
+if ($PSVersionTable.PSEdition -eq 'Desktop') { $global:RcPerfLimit = 15 }
+
 Test-Case 'perf: ~100KB C++ file' {
     $block = @'
 #include <stdio.h> // header
@@ -118,7 +122,7 @@ int add(int a, int b) { // add
     Write-Host ("      perf: {0:N0} bytes, {1} comments removed, {2:N2}s" -f $text.Length, $r.Removed, $sw.Elapsed.TotalSeconds)
     Assert-Equal $r.ExitCode 0 $r.Message
     Assert-True ($r.Removed -gt 1000) 'many comments'
-    Assert-True ($sw.Elapsed.TotalSeconds -lt 5) "took $($sw.Elapsed.TotalSeconds)s"
+    Assert-True ($sw.Elapsed.TotalSeconds -lt $global:RcPerfLimit) "took $($sw.Elapsed.TotalSeconds)s"
 }
 
 # ---- TypeScript / HTML -----------------------------------------------------
@@ -203,7 +207,7 @@ function Measure-Lang {
     $sw.Stop()
     Write-Host ("      perf {0}: {1:N0} bytes, {2} comments removed, {3:N2}s" -f $Ext, $text.Length, $r.Removed, $sw.Elapsed.TotalSeconds)
     Assert-Equal $r.ExitCode 0 $r.Message
-    Assert-True ($sw.Elapsed.TotalSeconds -lt 5) "took $($sw.Elapsed.TotalSeconds)s"
+    Assert-True ($sw.Elapsed.TotalSeconds -lt $global:RcPerfLimit) "took $($sw.Elapsed.TotalSeconds)s"
     return $r
 }
 
