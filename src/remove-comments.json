@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "output": { "mode": "outDir", "outDir": "../out", "backup": false },
+  "encoding": "auto",
+  "keep": {
+    "patterns": ["Copyright", "NOLINT", "@license"],
+    "regex": ["^\\s*//\\s*@generated", "TICKET-\\d+"],
+    "caseSensitive": true
+  },
+  "keepRegion": { "start": "% DEL START", "end": "% DEL END" },
+  "languages": {
+    "cpp":        { "extensions": [".c", ".cpp", ".cc", ".h", ".hpp", ".hh"] },
+    "java":       { "extensions": [".java"], "keepPatterns": ["@formatter:"] },
+    "typescript": { "extensions": [".ts"] },
+    "css":        { "extensions": [".css"] },
+    "html":       { "extensions": [".html", ".htm"] },
+    "shell":      { "extensions": [".sh"] },
+    "makefile":   { "extensions": [".mk"], "fileNames": ["Makefile", "makefile", "GNUmakefile"] },
+    "conf":       { "extensions": [".conf"] }
+  },
+  "batch": { "root": "../src" },
+  "exclude": ["third_party/**", "**/vendor/**"],
+  "excludeFiles": ["oss-list.txt"],
+  "log": { "path": "../out/remove-comments-log.csv" },
+  "_comment": "_ で始まるキーはメモとして無視される"
+}
