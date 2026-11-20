@@ -1,0 +1,3 @@
+a { background: url(//example.com/x.png); }
+b { content: "/* not */ // not"; color: red;  }
+c { content: '\''; } // not a comment in css

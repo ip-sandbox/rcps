@@ -236,3 +236,20 @@ Test-Case 'settings: regex timeout -> exit code 6, nothing written' {
     Assert-True (-not (Test-Path -LiteralPath $out)) 'no output'
     Assert-True ($sw.Elapsed.TotalSeconds -lt 10) 'times out quickly'
 }
+
+Test-Case 'settings: date-like string values stay strings (or give a clear 9)' {
+    $d = New-TestDir
+    $p = New-TestConfig -Dir $d -Json '{"keep":{"patterns":["2024-01-01","x"]},"languages":{"java":{"keepPatterns":["2024-01-01T10:00:00Z"]}}}'
+    $s = $null
+    $err = $null
+    try { $s = Read-RcSettings -ConfigPath $p -ScriptDir $d } catch { $err = Convert-RcException -ErrorRecord $_ }
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind') -or $PSVersionTable.PSVersion.Major -lt 6) {
+        Assert-Equal $err $null 'must be accepted'
+        Assert-Equal $s.KeepPatterns[0] '2024-01-01'
+        Assert-Equal $s.LangKeepPatterns['java'][0] '2024-01-01T10:00:00Z'
+    }
+    else {
+        Assert-Equal $err.Code 9
+        Assert-True ($err.Message -like '*keep.patterns*date*') $err.Message
+    }
+}

@@ -144,11 +144,11 @@ Test-Case 'file: unsupported type -> 2 (even if the file does not exist)' {
 }
 Test-Case 'file: language not yet implemented -> 1' {
     $d = New-TestDir
-    $in = Join-Path $d 'a.cpp'
+    $in = Join-Path $d 'a.ts'
     [IO.File]::WriteAllBytes($in, (Get-TestUtf8 "// x`n"))
-    $r = Invoke-RcFile -Settings (New-EncSettings) -Path $in -OutPath (Join-Path $d 'o.cpp')
+    $r = Invoke-RcFile -Settings (New-EncSettings) -Path $in -OutPath (Join-Path $d 'o.ts')
     Assert-Equal $r.ExitCode 1
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $d 'o.cpp')))
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $d 'o.ts')))
 }
 Test-Case 'file: no destination and no inPlace -> 9; DryRun needs none' {
     $d = New-TestDir

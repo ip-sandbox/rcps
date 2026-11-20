@@ -89,6 +89,9 @@ function Get-RcObjectMap {
 
 function Get-RcString {
     param($Value, [string]$Where)
+    if ($Value -is [datetime]) {
+        throw (New-RcError -Code 9 -Message "$Where looks like a date and was converted to [datetime] by ConvertFrom-Json (PowerShell 7 without -DateKind); use PowerShell 7.5 or later, or change the value so it does not look like a date")
+    }
     if ($Value -isnot [string]) { throw (New-RcError -Code 9 -Message "$Where must be a string") }
     if ($Value.Length -eq 0) { throw (New-RcError -Code 9 -Message "$Where must not be empty") }
     return $Value
@@ -153,7 +156,12 @@ function Read-RcSettings {
         try {
             $json = [IO.File]::ReadAllText($cfgFile, (New-Object System.Text.UTF8Encoding -ArgumentList $false))
             if ($json.TrimStart().StartsWith('[')) { throw 'top level must be an object' }
-            $root = ConvertFrom-Json -InputObject $json -ErrorAction Stop
+            if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+                $root = ConvertFrom-Json -InputObject $json -DateKind String -ErrorAction Stop
+            }
+            else {
+                $root = ConvertFrom-Json -InputObject $json -ErrorAction Stop
+            }
         }
         catch {
             throw (New-RcError -Code 9 -Message "cannot parse config '$cfgFile': $($_.Exception.Message)")
@@ -471,13 +479,147 @@ function Get-RcCommentsConf {
     return , $list
 }
 
+# C/C++, Java, CSS (design 3.3)
+function Get-RcLineNumber {
+    param([string]$Text, [int]$Pos)
+    $line = 1
+    $p = 0
+    while ($true) {
+        $q = $Text.IndexOf([char]10, $p)
+        if ($q -lt 0 -or $q -ge $Pos) { break }
+        $line++
+        $p = $q + 1
+    }
+    return $line
+}
+
+function Test-RcIdentChar {
+    param([char]$C)
+    return ([char]::IsLetterOrDigit($C) -or $C -eq [char]95)
+}
+
+# skips a '...' or "..." literal starting at $Start (the quote); returns the index after the closing quote
+function Skip-RcQuoted {
+    param([string]$Text, [int]$Start, [string]$What)
+    $q = $Text[$Start]
+    $n = $Text.Length
+    $j = $Start + 1
+    while ($j -lt $n) {
+        $ch = $Text[$j]
+        if ($ch -eq [char]92) {
+            if ($j + 2 -lt $n -and $Text[$j + 1] -eq [char]13 -and $Text[$j + 2] -eq [char]10) { $j += 3 } else { $j += 2 }
+            continue
+        }
+        if ($ch -eq $q) { return ($j + 1) }
+        if ($ch -eq [char]10) { break }
+        $j++
+    }
+    throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $Text -Pos $Start) -Message "unclosed $What")
+}
+
+function Get-RcCommentsCLike {
+    param([string]$Text, [string]$Flavor)
+    $list = New-Object 'System.Collections.Generic.List[object]'
+    $n = $Text.Length
+    $special = [char[]]@([char]47, [char]34, [char]39)
+    $isCpp = ($Flavor -eq 'cpp')
+    $isJava = ($Flavor -eq 'java')
+    $i = 0
+    while ($i -lt $n) {
+        $i = $Text.IndexOfAny($special, $i)
+        if ($i -lt 0) { break }
+        $c = $Text[$i]
+        if ($c -eq [char]47) {
+            $next = [char]0
+            if ($i + 1 -lt $n) { $next = $Text[$i + 1] }
+            if ($next -eq [char]42) {
+                $end = $Text.IndexOf('*/', $i + 2, [StringComparison]::Ordinal)
+                if ($end -lt 0) {
+                    throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $Text -Pos $i) -Message 'unclosed block comment')
+                }
+                $list.Add((New-RcToken -Start $i -End ($end + 2) -Kind 'block'))
+                $i = $end + 2
+            }
+            elseif ($next -eq [char]47 -and $Flavor -ne 'css') {
+                $p = $i
+                while ($true) {
+                    $nl = $Text.IndexOf([char]10, $p)
+                    if ($nl -lt 0) { $ce = $n } elseif ($nl -gt $p -and $Text[$nl - 1] -eq [char]13) { $ce = $nl - 1 } else { $ce = $nl }
+                    if ($isCpp -and $nl -ge 0 -and $ce -gt $p -and $Text[$ce - 1] -eq [char]92) { $p = $nl + 1; continue }
+                    break
+                }
+                if ($isCpp -and $nl -lt 0 -and $ce -gt 0 -and $Text[$ce - 1] -eq [char]92) { $ce = $n }
+                $list.Add((New-RcToken -Start $i -End $ce -Kind 'line'))
+                $i = $ce
+            }
+            else { $i++ }
+            continue
+        }
+        if ($c -eq [char]34) {
+            if ($isJava -and $i + 2 -lt $n -and $Text[$i + 1] -eq [char]34 -and $Text[$i + 2] -eq [char]34) {
+                $j = $i + 3
+                $closed = $false
+                while ($j -lt $n) {
+                    $ch = $Text[$j]
+                    if ($ch -eq [char]92) { $j += 2; continue }
+                    if ($ch -eq [char]34 -and $j + 2 -lt $n + 0 -and $Text[$j + 1] -eq [char]34 -and $Text[$j + 2] -eq [char]34) { $closed = $true; break }
+                    $j++
+                }
+                if (-not $closed) {
+                    throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $Text -Pos $i) -Message 'unclosed text block')
+                }
+                $i = $j + 3
+                continue
+            }
+            if ($isCpp -and $i -gt 0 -and $Text[$i - 1] -eq [char]82) {
+                $ps = $i - 1                 # index of 'R'
+                if ($ps -ge 2 -and $Text[$ps - 2] -eq [char]117 -and $Text[$ps - 1] -eq [char]56) { $ps -= 2 }
+                elseif ($ps -ge 1 -and (@([char]76, [char]117, [char]85) -contains $Text[$ps - 1])) { $ps -= 1 }
+                if ($ps -eq 0 -or -not (Test-RcIdentChar $Text[$ps - 1])) {
+                    $k = $i + 1
+                    while ($k -lt $n -and $k - $i -le 17 -and $Text[$k] -ne [char]40) {
+                        $d = $Text[$k]
+                        if ($d -eq [char]41 -or $d -eq [char]92 -or $d -eq [char]34 -or [char]::IsWhiteSpace($d)) { break }
+                        $k++
+                    }
+                    if ($k -ge $n -or $Text[$k] -ne [char]40 -or $k - $i - 1 -gt 16) {
+                        throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $Text -Pos $i) -Message 'invalid raw string delimiter')
+                    }
+                    $term = ')' + $Text.Substring($i + 1, $k - $i - 1) + '"'
+                    $end = $Text.IndexOf($term, $k + 1, [StringComparison]::Ordinal)
+                    if ($end -lt 0) {
+                        throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $Text -Pos $i) -Message 'unclosed raw string')
+                    }
+                    $i = $end + $term.Length
+                    continue
+                }
+            }
+            $i = Skip-RcQuoted -Text $Text -Start $i -What 'string'
+            continue
+        }
+        # single quote
+        if ($isCpp -and $i -gt 0 -and [char]::IsLetterOrDigit($Text[$i - 1])) {
+            $b = $i - 1
+            while ($b -ge 0 -and ((Test-RcIdentChar $Text[$b]) -or $Text[$b] -eq [char]39)) { $b-- }
+            $b++
+            if ($Text[$b] -ge [char]48 -and $Text[$b] -le [char]57) { $i++; continue }   # digit separator
+        }
+        $i = Skip-RcQuoted -Text $Text -Start $i -What 'character literal'
+    }
+    return , $list
+}
+
 function Get-RcComments {
     param([string]$Language, [string]$Text)
     if ($Language -ceq 'conf') {
         $t = Get-RcCommentsConf -Text $Text
         return , $t
     }
-    if (@('cpp', 'java', 'typescript', 'css', 'html', 'shell', 'makefile') -ccontains $Language) {
+    if (@('cpp', 'java', 'css') -ccontains $Language) {
+        $t = Get-RcCommentsCLike -Text $Text -Flavor $Language
+        return , $t
+    }
+    if (@('typescript', 'html', 'shell', 'makefile') -ccontains $Language) {
         throw (New-RcError -Code 1 -Message "not implemented: $Language")
     }
     throw (New-RcError -Code 1 -Message "unknown language: $Language")

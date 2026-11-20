@@ -1,0 +1,4 @@
+/* header */
+a { background: url(//example.com/x.png); } /* c */
+b { content: "/* not */ // not"; color: red; /* c */ }
+c { content: '\''; } // not a comment in css
