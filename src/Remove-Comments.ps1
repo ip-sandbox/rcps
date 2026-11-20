@@ -609,6 +609,209 @@ function Get-RcCommentsCLike {
     return , $list
 }
 
+# TypeScript (design 3.4)
+# decides whether a '/' after the code in $Seg starts a regex literal ('re') or is a division ('div')
+function Get-RcTsPrev {
+    param([string]$Seg, [string]$Prev)
+    $e = $Seg.Length - 1
+    while ($e -ge 0 -and [char]::IsWhiteSpace($Seg[$e])) { $e-- }
+    if ($e -lt 0) { return $Prev }
+    $ch = $Seg[$e]
+    if ('(,=:[!&|?{};+-*%<>~^/'.IndexOf($ch) -ge 0) { return 're' }
+    if ([char]::IsLetterOrDigit($ch) -or $ch -eq [char]95 -or $ch -eq [char]36) {
+        $b = $e
+        while ($b -gt 0 -and ([char]::IsLetterOrDigit($Seg[$b - 1]) -or $Seg[$b - 1] -eq [char]95 -or $Seg[$b - 1] -eq [char]36)) { $b-- }
+        $word = $Seg.Substring($b, $e - $b + 1)
+        if (@('return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'yield', 'await') -ccontains $word) { return 're' }
+    }
+    return 'div'
+}
+
+function Get-RcCommentsTypeScript {
+    param([string]$Text)
+    $list = New-Object 'System.Collections.Generic.List[object]'
+    $n = $Text.Length
+    $codeSpecial = [char[]]@([char]47, [char]34, [char]39, [char]96, [char]123, [char]125)
+    $tmplSpecial = [char[]]@([char]96, [char]92, [char]36)
+    $depthStack = New-Object 'System.Collections.Generic.List[int]'
+    $startStack = New-Object 'System.Collections.Generic.List[int]'
+    $inTemplate = $false
+    $depth = 0
+    $tstart = 0
+    $prev = 're'
+    $segStart = 0
+    $i = 0
+    while ($i -lt $n) {
+        if ($inTemplate) {
+            $j = $Text.IndexOfAny($tmplSpecial, $i)
+            if ($j -lt 0) { $i = $n; break }
+            $c = $Text[$j]
+            if ($c -eq [char]92) { $i = $j + 2 }
+            elseif ($c -eq [char]36) {
+                if ($j + 1 -lt $n -and $Text[$j + 1] -eq [char]123) {
+                    $depthStack.Add($depth); $startStack.Add($tstart)
+                    $depth = 0; $inTemplate = $false; $prev = 're'
+                    $i = $j + 2; $segStart = $i
+                }
+                else { $i = $j + 1 }
+            }
+            else {
+                $inTemplate = $false; $prev = 'div'
+                $i = $j + 1; $segStart = $i
+            }
+            continue
+        }
+        $i = $Text.IndexOfAny($codeSpecial, $i)
+        if ($i -lt 0) { $i = $n; break }
+        $c = $Text[$i]
+        if ($c -eq [char]47) {
+            $prev = Get-RcTsPrev -Seg $Text.Substring($segStart, $i - $segStart) -Prev $prev
+            $segStart = $i
+            $next = [char]0
+            if ($i + 1 -lt $n) { $next = $Text[$i + 1] }
+            if ($next -eq [char]42) {
+                $end = $Text.IndexOf('*/', $i + 2, [StringComparison]::Ordinal)
+                if ($end -lt 0) {
+                    throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $Text -Pos $i) -Message 'unclosed block comment')
+                }
+                $list.Add((New-RcToken -Start $i -End ($end + 2) -Kind 'block'))
+                $i = $end + 2; $segStart = $i
+            }
+            elseif ($next -eq [char]47) {
+                $nl = $Text.IndexOf([char]10, $i)
+                if ($nl -lt 0) { $ce = $n } elseif ($nl -gt $i -and $Text[$nl - 1] -eq [char]13) { $ce = $nl - 1 } else { $ce = $nl }
+                $tok = New-RcToken -Start $i -End $ce -Kind 'line'
+                if ([regex]::IsMatch($Text.Substring($i, $ce - $i), '^///\s*<reference\b', [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)) { $tok.Fixed = $true }
+                $list.Add($tok)
+                $i = $ce; $segStart = $i
+            }
+            elseif ($prev -eq 're') {
+                $j = $i + 1
+                $inClass = $false
+                $ok = $false
+                while ($j -lt $n) {
+                    $ch = $Text[$j]
+                    if ($ch -eq [char]92) { $j += 2; continue }
+                    if ($ch -eq [char]10) { break }
+                    if ($ch -eq [char]91) { $inClass = $true }
+                    elseif ($ch -eq [char]93) { $inClass = $false }
+                    elseif ($ch -eq [char]47 -and -not $inClass) { $ok = $true; break }
+                    $j++
+                }
+                if ($ok) {
+                    $j++
+                    while ($j -lt $n -and [char]::IsLetter($Text[$j])) { $j++ }
+                    $i = $j; $segStart = $i; $prev = 'div'
+                }
+                else { $i++ }       # not a regex after all: division
+            }
+            else { $i++ }
+            continue
+        }
+        if ($c -eq [char]34 -or $c -eq [char]39) {
+            $i = Skip-RcQuoted -Text $Text -Start $i -What 'string'
+            $prev = 'div'; $segStart = $i
+            continue
+        }
+        if ($c -eq [char]96) {
+            $inTemplate = $true; $tstart = $i
+            $i++
+            continue
+        }
+        if ($c -eq [char]123) { $depth++ }
+        elseif ($depth -gt 0) { $depth-- }
+        elseif ($depthStack.Count -gt 0) {
+            $last = $depthStack.Count - 1
+            $depth = $depthStack[$last]; $tstart = $startStack[$last]
+            $depthStack.RemoveAt($last); $startStack.RemoveAt($last)
+            $inTemplate = $true
+        }
+        $prev = 're'
+        $i++; $segStart = $i
+    }
+    if ($inTemplate -or $depthStack.Count -gt 0) {
+        if (-not $inTemplate) { $tstart = $startStack[$startStack.Count - 1] }
+        throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $Text -Pos $tstart) -Message 'unclosed template literal')
+    }
+    return , $list
+}
+
+# HTML (design 3.5)
+function Get-RcCommentsHtml {
+    param([string]$Text)
+    $list = New-Object 'System.Collections.Generic.List[object]'
+    $n = $Text.Length
+    $ord = [StringComparison]::Ordinal
+    $i = 0
+    while ($i -lt $n) {
+        $i = $Text.IndexOf([char]60, $i)
+        if ($i -lt 0) { break }
+        if ($i + 3 -lt $n -and $Text[$i + 1] -eq [char]33 -and $Text[$i + 2] -eq [char]45 -and $Text[$i + 3] -eq [char]45) {
+            if ($i + 4 -lt $n -and $Text[$i + 4] -eq [char]62) { $end = $i + 2; $tokEnd = $i + 5 }                  # <!-->
+            elseif ($i + 5 -lt $n -and $Text[$i + 4] -eq [char]45 -and $Text[$i + 5] -eq [char]62) { $end = $i + 3; $tokEnd = $i + 6 }   # <!--->
+            else {
+                $end = $Text.IndexOf('-->', $i + 4, $ord)
+                if ($end -lt 0) {
+                    throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $Text -Pos $i) -Message 'unclosed comment')
+                }
+                $tokEnd = $end + 3
+            }
+            $tok = New-RcToken -Start $i -End $tokEnd -Kind 'block'
+            if ([string]::CompareOrdinal($Text, $i, '<!--[if', 0, 7) -eq 0 -or
+                [string]::CompareOrdinal($Text, $i, '<!--<![endif]', 0, 13) -eq 0) { $tok.Fixed = $true }
+            $list.Add($tok)
+            $i = $tokEnd
+            continue
+        }
+        if ($i + 1 -lt $n -and $Text[$i + 1] -lt [char]128 -and [char]::IsLetter($Text[$i + 1])) {
+            $j = $i + 1
+            while ($j -lt $n -and -not [char]::IsWhiteSpace($Text[$j]) -and $Text[$j] -ne [char]62 -and $Text[$j] -ne [char]47) { $j++ }
+            $name = $Text.Substring($i + 1, $j - $i - 1).ToLowerInvariant()
+            $k = $j
+            $closed = $false
+            while ($k -lt $n) {
+                $ch = $Text[$k]
+                if ($ch -eq [char]34 -or $ch -eq [char]39) {
+                    $q = $Text.IndexOf($ch, $k + 1)
+                    if ($q -lt 0) { break }
+                    $k = $q + 1
+                    continue
+                }
+                if ($ch -eq [char]62) { $closed = $true; break }
+                $k++
+            }
+            if (-not $closed) {
+                throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $Text -Pos $i) -Message "unclosed tag <$name")
+            }
+            $i = $k + 1
+            if (@('script', 'style', 'textarea', 'title') -ccontains $name) {
+                $p = $i
+                $found = -1
+                while ($true) {
+                    $q = $Text.IndexOf("</$name", $p, [StringComparison]::OrdinalIgnoreCase)
+                    if ($q -lt 0) { break }
+                    $a = $q + 2 + $name.Length
+                    if ($a -ge $n -or [char]::IsWhiteSpace($Text[$a]) -or $Text[$a] -eq [char]62 -or $Text[$a] -eq [char]47) { $found = $q; break }
+                    $p = $a
+                }
+                if ($found -lt 0) {
+                    throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $Text -Pos ($i - 1)) -Message "unclosed <$name> element")
+                }
+                $i = $found
+            }
+            continue
+        }
+        if ($i + 1 -lt $n -and ($Text[$i + 1] -eq [char]33 -or $Text[$i + 1] -eq [char]63 -or $Text[$i + 1] -eq [char]47)) {
+            $q = $Text.IndexOf([char]62, $i)
+            if ($q -lt 0) { break }
+            $i = $q + 1
+            continue
+        }
+        $i++
+    }
+    return , $list
+}
+
 function Get-RcComments {
     param([string]$Language, [string]$Text)
     if ($Language -ceq 'conf') {
@@ -619,7 +822,15 @@ function Get-RcComments {
         $t = Get-RcCommentsCLike -Text $Text -Flavor $Language
         return , $t
     }
-    if (@('typescript', 'html', 'shell', 'makefile') -ccontains $Language) {
+    if ($Language -ceq 'typescript') {
+        $t = Get-RcCommentsTypeScript -Text $Text
+        return , $t
+    }
+    if ($Language -ceq 'html') {
+        $t = Get-RcCommentsHtml -Text $Text
+        return , $t
+    }
+    if (@('shell', 'makefile') -ccontains $Language) {
         throw (New-RcError -Code 1 -Message "not implemented: $Language")
     }
     throw (New-RcError -Code 1 -Message "unknown language: $Language")
@@ -741,7 +952,7 @@ function Set-RcKeepFlags {
 # ---------------------------------------------------------------------------
 
 function Convert-RcText {
-    param([string]$Text, $Tokens)
+    param([string]$Text, $Tokens, [bool]$JoinWithSpace = $true)
     $table = Get-RcLineTable -Text $Text
     $starts = $table.Start
     $cends = $table.ContentEnd
@@ -783,7 +994,7 @@ function Convert-RcText {
         $pos = $s
         foreach ($r in $merged) {
             [void]$line.Append($Text, $pos, $r[0] - $pos)
-            if ($r[0] -gt $s -and $r[1] -lt $ce -and
+            if ($JoinWithSpace -and $r[0] -gt $s -and $r[1] -lt $ce -and
                 -not [char]::IsWhiteSpace($Text[$r[0] - 1]) -and -not [char]::IsWhiteSpace($Text[$r[1]])) {
                 [void]$line.Append([char]32)
             }
@@ -839,7 +1050,7 @@ function Invoke-RcFile {
         Set-RcKeepFlags -Tokens $tokens -Text $text -Settings $Settings -Language $lang
         $removed = 0; $kept = 0
         foreach ($t in $tokens) { if ($t.Keep) { $kept++ } else { $removed++ } }
-        $newText = Convert-RcText -Text $text -Tokens $tokens
+        $newText = Convert-RcText -Text $text -Tokens $tokens -JoinWithSpace ($lang -ne 'html')
 
         if (-not $DryRun) {
             $write = $true

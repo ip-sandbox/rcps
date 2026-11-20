@@ -169,3 +169,13 @@ Test-Case 'keep: region keywords are case-sensitive and customizable' {
     foreach ($n in @('// BEGIN-KEEP', '// a', '// END-KEEP', '// % DEL START')) { $k = New-TestToken $t $n 'line' $f; $f = $k.End; $l.Add($k) }
     Assert-Equal (Get-TestKeeps $t $l $s) @($true, $true, $true, $false)
 }
+
+Test-Case 'rewrite: JoinWithSpace=$false joins neighbours without a space' {
+    $tk = { param($t, $n) $l = New-Object 'System.Collections.Generic.List[object]'; $l.Add((New-TestToken $t $n 'block')); $l }
+    Assert-Equal (Convert-RcText -Text 'a/**/b' -Tokens (& $tk 'a/**/b' '/**/') -JoinWithSpace $false) 'ab'
+    Assert-Equal (Convert-RcText -Text 'a/**/b' -Tokens (& $tk 'a/**/b' '/**/')) 'a b' 'default is true'
+    $t = "x /* c */`n/* d */`ny"
+    $l = New-Object 'System.Collections.Generic.List[object]'
+    $l.Add((New-TestToken $t '/* c */' 'block')); $l.Add((New-TestToken $t '/* d */' 'block'))
+    Assert-Equal (Convert-RcText -Text $t -Tokens $l -JoinWithSpace $false) "x`ny" 'rules 1,2 still apply'
+}
