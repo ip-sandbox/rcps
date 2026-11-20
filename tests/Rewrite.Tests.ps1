@@ -51,9 +51,9 @@ Test-Case 'rewrite: Keep token is untouched (trailing spaces too)' {
     $t = "a // keep  `nb // drop`n"
     Assert-Equal (Test-Rewrite $t @(@('// keep  ', 'line'), @('// drop', 'line')) @(0)) "a // keep  `nb`n"
 }
-Test-Case 'rewrite: untouched lines keep trailing whitespace; touched lines are trimmed' {
-    $t = "a  `n// c`nb`t`nc /* x */  `n"
-    Assert-Equal (Test-Rewrite $t @(@('// c', 'line'), @('/* x */', 'block'))) "a  `nb`t`nc`n"
+Test-Case 'rewrite: only whitespace before a line-end deletion is trimmed' {
+    $t = "a  `n// c`nb`t`nc /* x */  `nd   // y`n"
+    Assert-Equal (Test-Rewrite $t @(@('// c', 'line'), @('/* x */', 'block'), @('// y', 'line'))) "a  `nb`t`nc   `nd`n"
 }
 Test-Case 'rewrite: blank lines are never compressed' {
     $t = "`n// c`n`n`na`n"
@@ -210,5 +210,5 @@ Test-Case 'rewrite rule 7: kept comment line is emitted unchanged' {
 }
 Test-Case 'rewrite rule 8: trailing whitespace is not trimmed when the line ends with a backslash' {
     Assert-Equal (Test-Rewrite "echo a \ # c`necho b`n" @(, @('# c', 'line'))) "echo a \ `necho b`n"
-    Assert-Equal (Test-Rewrite "x = 1 /* c */  `n" @(, @('/* c */', 'block'))) "x = 1`n" 'normal trim still applies'
+    Assert-Equal (Test-Rewrite "x = 1  // c`n" @(, @('// c', 'line'))) "x = 1`n" 'normal trim still applies'
 }

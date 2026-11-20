@@ -467,11 +467,11 @@ function Get-RcCommentsConf {
         if ($nl -lt 0) { $lineEnd = $n; $ce = $n }
         else {
             $lineEnd = $nl + 1
-            if ($nl -gt $pos -and $Text[$nl - 1] -eq [char]13) { $ce = $nl - 1 } else { $ce = $nl }
+            if ($nl -gt $pos -and $Text[$nl - 1] -ceq [char]13) { $ce = $nl - 1 } else { $ce = $nl }
         }
         $i = $pos
         while ($i -lt $ce -and [char]::IsWhiteSpace($Text[$i])) { $i++ }
-        if ($i -lt $ce -and $Text[$i] -eq [char]35) {
+        if ($i -lt $ce -and $Text[$i] -ceq [char]35) {
             $list.Add((New-RcToken -Start $i -End $ce -Kind 'line'))
         }
         $pos = $lineEnd
@@ -495,7 +495,7 @@ function Get-RcLineNumber {
 
 function Test-RcIdentChar {
     param([char]$C)
-    return ([char]::IsLetterOrDigit($C) -or $C -eq [char]95)
+    return ([char]::IsLetterOrDigit($C) -or $C -ceq [char]95)
 }
 
 # skips a '...' or "..." literal starting at $Start (the quote); returns the index after the closing quote
@@ -506,12 +506,12 @@ function Skip-RcQuoted {
     $j = $Start + 1
     while ($j -lt $n) {
         $ch = $Text[$j]
-        if ($ch -eq [char]92) {
-            if ($j + 2 -lt $n -and $Text[$j + 1] -eq [char]13 -and $Text[$j + 2] -eq [char]10) { $j += 3 } else { $j += 2 }
+        if ($ch -ceq [char]92) {
+            if ($j + 2 -lt $n -and $Text[$j + 1] -ceq [char]13 -and $Text[$j + 2] -ceq [char]10) { $j += 3 } else { $j += 2 }
             continue
         }
-        if ($ch -eq $q) { return ($j + 1) }
-        if ($ch -eq [char]10) { break }
+        if ($ch -ceq $q) { return ($j + 1) }
+        if ($ch -ceq [char]10) { break }
         $j++
     }
     throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $Text -Pos $Start) -Message "unclosed $What")
@@ -522,17 +522,17 @@ function Get-RcCommentsCLike {
     $list = New-Object 'System.Collections.Generic.List[object]'
     $n = $Text.Length
     $special = [char[]]@([char]47, [char]34, [char]39)
-    $isCpp = ($Flavor -eq 'cpp')
-    $isJava = ($Flavor -eq 'java')
+    $isCpp = ($Flavor -ceq 'cpp')
+    $isJava = ($Flavor -ceq 'java')
     $i = 0
     while ($i -lt $n) {
         $i = $Text.IndexOfAny($special, $i)
         if ($i -lt 0) { break }
         $c = $Text[$i]
-        if ($c -eq [char]47) {
+        if ($c -ceq [char]47) {
             $next = [char]0
             if ($i + 1 -lt $n) { $next = $Text[$i + 1] }
-            if ($next -eq [char]42) {
+            if ($next -ceq [char]42) {
                 $end = $Text.IndexOf('*/', $i + 2, [StringComparison]::Ordinal)
                 if ($end -lt 0) {
                     throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $Text -Pos $i) -Message 'unclosed block comment')
@@ -540,29 +540,29 @@ function Get-RcCommentsCLike {
                 $list.Add((New-RcToken -Start $i -End ($end + 2) -Kind 'block'))
                 $i = $end + 2
             }
-            elseif ($next -eq [char]47 -and $Flavor -ne 'css') {
+            elseif ($next -ceq [char]47 -and $Flavor -cne 'css') {
                 $p = $i
                 while ($true) {
                     $nl = $Text.IndexOf([char]10, $p)
-                    if ($nl -lt 0) { $ce = $n } elseif ($nl -gt $p -and $Text[$nl - 1] -eq [char]13) { $ce = $nl - 1 } else { $ce = $nl }
-                    if ($isCpp -and $nl -ge 0 -and $ce -gt $p -and $Text[$ce - 1] -eq [char]92) { $p = $nl + 1; continue }
+                    if ($nl -lt 0) { $ce = $n } elseif ($nl -gt $p -and $Text[$nl - 1] -ceq [char]13) { $ce = $nl - 1 } else { $ce = $nl }
+                    if ($isCpp -and $nl -ge 0 -and $ce -gt $p -and $Text[$ce - 1] -ceq [char]92) { $p = $nl + 1; continue }
                     break
                 }
-                if ($isCpp -and $nl -lt 0 -and $ce -gt 0 -and $Text[$ce - 1] -eq [char]92) { $ce = $n }
+                if ($isCpp -and $nl -lt 0 -and $ce -gt 0 -and $Text[$ce - 1] -ceq [char]92) { $ce = $n }
                 $list.Add((New-RcToken -Start $i -End $ce -Kind 'line'))
                 $i = $ce
             }
             else { $i++ }
             continue
         }
-        if ($c -eq [char]34) {
-            if ($isJava -and $i + 2 -lt $n -and $Text[$i + 1] -eq [char]34 -and $Text[$i + 2] -eq [char]34) {
+        if ($c -ceq [char]34) {
+            if ($isJava -and $i + 2 -lt $n -and $Text[$i + 1] -ceq [char]34 -and $Text[$i + 2] -ceq [char]34) {
                 $j = $i + 3
                 $closed = $false
                 while ($j -lt $n) {
                     $ch = $Text[$j]
-                    if ($ch -eq [char]92) { $j += 2; continue }
-                    if ($ch -eq [char]34 -and $j + 2 -lt $n + 0 -and $Text[$j + 1] -eq [char]34 -and $Text[$j + 2] -eq [char]34) { $closed = $true; break }
+                    if ($ch -ceq [char]92) { $j += 2; continue }
+                    if ($ch -ceq [char]34 -and $j + 2 -lt $n + 0 -and $Text[$j + 1] -ceq [char]34 -and $Text[$j + 2] -ceq [char]34) { $closed = $true; break }
                     $j++
                 }
                 if (-not $closed) {
@@ -571,18 +571,18 @@ function Get-RcCommentsCLike {
                 $i = $j + 3
                 continue
             }
-            if ($isCpp -and $i -gt 0 -and $Text[$i - 1] -eq [char]82) {
+            if ($isCpp -and $i -gt 0 -and $Text[$i - 1] -ceq [char]82) {
                 $ps = $i - 1                 # index of 'R'
-                if ($ps -ge 2 -and $Text[$ps - 2] -eq [char]117 -and $Text[$ps - 1] -eq [char]56) { $ps -= 2 }
-                elseif ($ps -ge 1 -and (@([char]76, [char]117, [char]85) -contains $Text[$ps - 1])) { $ps -= 1 }
+                if ($ps -ge 2 -and $Text[$ps - 2] -ceq [char]117 -and $Text[$ps - 1] -ceq [char]56) { $ps -= 2 }
+                elseif ($ps -ge 1 -and (@([char]76, [char]117, [char]85) -ccontains $Text[$ps - 1])) { $ps -= 1 }
                 if ($ps -eq 0 -or -not (Test-RcIdentChar $Text[$ps - 1])) {
                     $k = $i + 1
-                    while ($k -lt $n -and $k - $i -le 17 -and $Text[$k] -ne [char]40) {
+                    while ($k -lt $n -and $k - $i -le 17 -and $Text[$k] -cne [char]40) {
                         $d = $Text[$k]
-                        if ($d -eq [char]41 -or $d -eq [char]92 -or $d -eq [char]34 -or [char]::IsWhiteSpace($d)) { break }
+                        if ($d -ceq [char]41 -or $d -ceq [char]92 -or $d -ceq [char]34 -or [char]::IsWhiteSpace($d)) { break }
                         $k++
                     }
-                    if ($k -ge $n -or $Text[$k] -ne [char]40 -or $k - $i - 1 -gt 16) {
+                    if ($k -ge $n -or $Text[$k] -cne [char]40 -or $k - $i - 1 -gt 16) {
                         throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $Text -Pos $i) -Message 'invalid raw string delimiter')
                     }
                     $term = ')' + $Text.Substring($i + 1, $k - $i - 1) + '"'
@@ -600,7 +600,7 @@ function Get-RcCommentsCLike {
         # single quote
         if ($isCpp -and $i -gt 0 -and [char]::IsLetterOrDigit($Text[$i - 1])) {
             $b = $i - 1
-            while ($b -ge 0 -and ((Test-RcIdentChar $Text[$b]) -or $Text[$b] -eq [char]39)) { $b-- }
+            while ($b -ge 0 -and ((Test-RcIdentChar $Text[$b]) -or $Text[$b] -ceq [char]39)) { $b-- }
             $b++
             if ($Text[$b] -ge [char]48 -and $Text[$b] -le [char]57) { $i++; continue }   # digit separator
         }
@@ -617,10 +617,12 @@ function Get-RcTsPrev {
     while ($e -ge 0 -and [char]::IsWhiteSpace($Seg[$e])) { $e-- }
     if ($e -lt 0) { return $Prev }
     $ch = $Seg[$e]
+    # postfix ++ / -- : the '/' that follows is a division
+    if (($ch -ceq [char]43 -or $ch -ceq [char]45) -and $e -ge 1 -and $Seg[$e - 1] -ceq $ch) { return 'div' }
     if ('(,=:[!&|?{};+-*%<>~^/'.IndexOf($ch) -ge 0) { return 're' }
-    if ([char]::IsLetterOrDigit($ch) -or $ch -eq [char]95 -or $ch -eq [char]36) {
+    if ([char]::IsLetterOrDigit($ch) -or $ch -ceq [char]95 -or $ch -ceq [char]36) {
         $b = $e
-        while ($b -gt 0 -and ([char]::IsLetterOrDigit($Seg[$b - 1]) -or $Seg[$b - 1] -eq [char]95 -or $Seg[$b - 1] -eq [char]36)) { $b-- }
+        while ($b -gt 0 -and ([char]::IsLetterOrDigit($Seg[$b - 1]) -or $Seg[$b - 1] -ceq [char]95 -or $Seg[$b - 1] -ceq [char]36)) { $b-- }
         $word = $Seg.Substring($b, $e - $b + 1)
         if (@('return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'yield', 'await') -ccontains $word) { return 're' }
     }
@@ -646,9 +648,9 @@ function Get-RcCommentsTypeScript {
             $j = $Text.IndexOfAny($tmplSpecial, $i)
             if ($j -lt 0) { $i = $n; break }
             $c = $Text[$j]
-            if ($c -eq [char]92) { $i = $j + 2 }
-            elseif ($c -eq [char]36) {
-                if ($j + 1 -lt $n -and $Text[$j + 1] -eq [char]123) {
+            if ($c -ceq [char]92) { $i = $j + 2 }
+            elseif ($c -ceq [char]36) {
+                if ($j + 1 -lt $n -and $Text[$j + 1] -ceq [char]123) {
                     $depthStack.Add($depth); $startStack.Add($tstart)
                     $depth = 0; $inTemplate = $false; $prev = 're'
                     $i = $j + 2; $segStart = $i
@@ -664,12 +666,12 @@ function Get-RcCommentsTypeScript {
         $i = $Text.IndexOfAny($codeSpecial, $i)
         if ($i -lt 0) { $i = $n; break }
         $c = $Text[$i]
-        if ($c -eq [char]47) {
+        if ($c -ceq [char]47) {
             $prev = Get-RcTsPrev -Seg $Text.Substring($segStart, $i - $segStart) -Prev $prev
             $segStart = $i
             $next = [char]0
             if ($i + 1 -lt $n) { $next = $Text[$i + 1] }
-            if ($next -eq [char]42) {
+            if ($next -ceq [char]42) {
                 $end = $Text.IndexOf('*/', $i + 2, [StringComparison]::Ordinal)
                 if ($end -lt 0) {
                     throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $Text -Pos $i) -Message 'unclosed block comment')
@@ -677,25 +679,25 @@ function Get-RcCommentsTypeScript {
                 $list.Add((New-RcToken -Start $i -End ($end + 2) -Kind 'block'))
                 $i = $end + 2; $segStart = $i
             }
-            elseif ($next -eq [char]47) {
+            elseif ($next -ceq [char]47) {
                 $nl = $Text.IndexOf([char]10, $i)
-                if ($nl -lt 0) { $ce = $n } elseif ($nl -gt $i -and $Text[$nl - 1] -eq [char]13) { $ce = $nl - 1 } else { $ce = $nl }
+                if ($nl -lt 0) { $ce = $n } elseif ($nl -gt $i -and $Text[$nl - 1] -ceq [char]13) { $ce = $nl - 1 } else { $ce = $nl }
                 $tok = New-RcToken -Start $i -End $ce -Kind 'line'
                 if ([regex]::IsMatch($Text.Substring($i, $ce - $i), '^///\s*<reference\b', [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)) { $tok.Fixed = $true }
                 $list.Add($tok)
                 $i = $ce; $segStart = $i
             }
-            elseif ($prev -eq 're') {
+            elseif ($prev -ceq 're') {
                 $j = $i + 1
                 $inClass = $false
                 $ok = $false
                 while ($j -lt $n) {
                     $ch = $Text[$j]
-                    if ($ch -eq [char]92) { $j += 2; continue }
-                    if ($ch -eq [char]10) { break }
-                    if ($ch -eq [char]91) { $inClass = $true }
-                    elseif ($ch -eq [char]93) { $inClass = $false }
-                    elseif ($ch -eq [char]47 -and -not $inClass) { $ok = $true; break }
+                    if ($ch -ceq [char]92) { $j += 2; continue }
+                    if ($ch -ceq [char]10) { break }
+                    if ($ch -ceq [char]91) { $inClass = $true }
+                    elseif ($ch -ceq [char]93) { $inClass = $false }
+                    elseif ($ch -ceq [char]47 -and -not $inClass) { $ok = $true; break }
                     $j++
                 }
                 if ($ok) {
@@ -708,17 +710,17 @@ function Get-RcCommentsTypeScript {
             else { $i++ }
             continue
         }
-        if ($c -eq [char]34 -or $c -eq [char]39) {
+        if ($c -ceq [char]34 -or $c -ceq [char]39) {
             $i = Skip-RcQuoted -Text $Text -Start $i -What 'string'
             $prev = 'div'; $segStart = $i
             continue
         }
-        if ($c -eq [char]96) {
+        if ($c -ceq [char]96) {
             $inTemplate = $true; $tstart = $i
             $i++
             continue
         }
-        if ($c -eq [char]123) { $depth++ }
+        if ($c -ceq [char]123) { $depth++ }
         elseif ($depth -gt 0) { $depth-- }
         elseif ($depthStack.Count -gt 0) {
             $last = $depthStack.Count - 1
@@ -746,9 +748,9 @@ function Get-RcCommentsHtml {
     while ($i -lt $n) {
         $i = $Text.IndexOf([char]60, $i)
         if ($i -lt 0) { break }
-        if ($i + 3 -lt $n -and $Text[$i + 1] -eq [char]33 -and $Text[$i + 2] -eq [char]45 -and $Text[$i + 3] -eq [char]45) {
-            if ($i + 4 -lt $n -and $Text[$i + 4] -eq [char]62) { $end = $i + 2; $tokEnd = $i + 5 }                  # <!-->
-            elseif ($i + 5 -lt $n -and $Text[$i + 4] -eq [char]45 -and $Text[$i + 5] -eq [char]62) { $end = $i + 3; $tokEnd = $i + 6 }   # <!--->
+        if ($i + 3 -lt $n -and $Text[$i + 1] -ceq [char]33 -and $Text[$i + 2] -ceq [char]45 -and $Text[$i + 3] -ceq [char]45) {
+            if ($i + 4 -lt $n -and $Text[$i + 4] -ceq [char]62) { $end = $i + 2; $tokEnd = $i + 5 }                  # <!-->
+            elseif ($i + 5 -lt $n -and $Text[$i + 4] -ceq [char]45 -and $Text[$i + 5] -ceq [char]62) { $end = $i + 3; $tokEnd = $i + 6 }   # <!--->
             else {
                 $end = $Text.IndexOf('-->', $i + 4, $ord)
                 if ($end -lt 0) {
@@ -765,19 +767,24 @@ function Get-RcCommentsHtml {
         }
         if ($i + 1 -lt $n -and $Text[$i + 1] -lt [char]128 -and [char]::IsLetter($Text[$i + 1])) {
             $j = $i + 1
-            while ($j -lt $n -and -not [char]::IsWhiteSpace($Text[$j]) -and $Text[$j] -ne [char]62 -and $Text[$j] -ne [char]47) { $j++ }
+            while ($j -lt $n -and -not [char]::IsWhiteSpace($Text[$j]) -and $Text[$j] -cne [char]62 -and $Text[$j] -cne [char]47) { $j++ }
             $name = $Text.Substring($i + 1, $j - $i - 1).ToLowerInvariant()
             $k = $j
             $closed = $false
             while ($k -lt $n) {
                 $ch = $Text[$k]
-                if ($ch -eq [char]34 -or $ch -eq [char]39) {
-                    $q = $Text.IndexOf($ch, $k + 1)
-                    if ($q -lt 0) { break }
-                    $k = $q + 1
-                    continue
+                if ($ch -ceq [char]34 -or $ch -ceq [char]39) {
+                    # a quote opens a value only right after '=' (whitespace allowed); otherwise it is an ordinary character
+                    $pp = $k - 1
+                    while ($pp -ge $j -and [char]::IsWhiteSpace($Text[$pp])) { $pp-- }
+                    if ($pp -ge $j -and $Text[$pp] -ceq [char]61) {
+                        $q = $Text.IndexOf($ch, $k + 1)
+                        if ($q -lt 0) { break }
+                        $k = $q + 1
+                        continue
+                    }
                 }
-                if ($ch -eq [char]62) { $closed = $true; break }
+                if ($ch -ceq [char]62) { $closed = $true; break }
                 $k++
             }
             if (-not $closed) {
@@ -791,7 +798,7 @@ function Get-RcCommentsHtml {
                     $q = $Text.IndexOf("</$name", $p, [StringComparison]::OrdinalIgnoreCase)
                     if ($q -lt 0) { break }
                     $a = $q + 2 + $name.Length
-                    if ($a -ge $n -or [char]::IsWhiteSpace($Text[$a]) -or $Text[$a] -eq [char]62 -or $Text[$a] -eq [char]47) { $found = $q; break }
+                    if ($a -ge $n -or [char]::IsWhiteSpace($Text[$a]) -or $Text[$a] -ceq [char]62 -or $Text[$a] -ceq [char]47) { $found = $q; break }
                     $p = $a
                 }
                 if ($found -lt 0) {
@@ -801,7 +808,7 @@ function Get-RcCommentsHtml {
             }
             continue
         }
-        if ($i + 1 -lt $n -and ($Text[$i + 1] -eq [char]33 -or $Text[$i + 1] -eq [char]63 -or $Text[$i + 1] -eq [char]47)) {
+        if ($i + 1 -lt $n -and ($Text[$i + 1] -ceq [char]33 -or $Text[$i + 1] -ceq [char]63 -or $Text[$i + 1] -ceq [char]47)) {
             $q = $Text.IndexOf([char]62, $i)
             if ($q -lt 0) { break }
             $i = $q + 1
@@ -821,7 +828,7 @@ function Skip-RcShBacktick {
     while ($j -lt $n) {
         $j = $St.Text.IndexOfAny($set, $j)
         if ($j -lt 0) { break }
-        if ($St.Text[$j] -eq [char]92) { $j += 2; continue }
+        if ($St.Text[$j] -ceq [char]92) { $j += 2; continue }
         return ($j + 1)
     }
     throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $St.Text -Pos $I) -Message 'unclosed backquote')
@@ -837,15 +844,15 @@ function Skip-RcShDq {
         $j = $text.IndexOfAny($set, $j)
         if ($j -lt 0) { break }
         $c = $text[$j]
-        if ($c -eq [char]34) { return ($j + 1) }
-        if ($c -eq [char]92) { $j += 2; continue }
-        if ($c -eq [char]96) { $j = Skip-RcShBacktick -St $St -I $j; continue }
+        if ($c -ceq [char]34) { return ($j + 1) }
+        if ($c -ceq [char]92) { $j += 2; continue }
+        if ($c -ceq [char]96) { $j = Skip-RcShBacktick -St $St -I $j; continue }
         # '$'
-        if ($j + 1 -lt $n -and $text[$j + 1] -eq [char]40) {
-            if ($j + 2 -lt $n -and $text[$j + 2] -eq [char]40) { $j = Invoke-RcShCode -St $St -I ($j + 2) -Paren $true -NoHd $true -OpenPos $j }
+        if ($j + 1 -lt $n -and $text[$j + 1] -ceq [char]40) {
+            if ($j + 2 -lt $n -and $text[$j + 2] -ceq [char]40) { $j = Invoke-RcShCode -St $St -I ($j + 2) -Paren $true -NoHd $true -OpenPos $j }
             else { $j = Invoke-RcShCode -St $St -I ($j + 2) -Paren $true -NoHd $NoHd -OpenPos $j }
         }
-        elseif ($j + 1 -lt $n -and $text[$j + 1] -eq [char]123) { $j = Skip-RcShBrace -St $St -I $j -NoHd $NoHd }
+        elseif ($j + 1 -lt $n -and $text[$j + 1] -ceq [char]123) { $j = Skip-RcShBrace -St $St -I $j -NoHd $NoHd }
         else { $j++ }
     }
     throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $text -Pos $I) -Message 'unclosed double quote')
@@ -863,15 +870,15 @@ function Skip-RcShBrace {
         $j = $text.IndexOfAny($set, $j)
         if ($j -lt 0) { break }
         $c = $text[$j]
-        if ($c -eq [char]123) { $depth++; $j++ }
-        elseif ($c -eq [char]125) { $depth--; $j++; if ($depth -eq 0) { return $j } }
-        elseif ($c -eq [char]92) { $j += 2 }
-        elseif ($c -eq [char]39) {
+        if ($c -ceq [char]123) { $depth++; $j++ }
+        elseif ($c -ceq [char]125) { $depth--; $j++; if ($depth -eq 0) { return $j } }
+        elseif ($c -ceq [char]92) { $j += 2 }
+        elseif ($c -ceq [char]39) {
             $q = $text.IndexOf([char]39, $j + 1)
             if ($q -lt 0) { throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $text -Pos $j) -Message 'unclosed single quote') }
             $j = $q + 1
         }
-        elseif ($c -eq [char]34) { $j = Skip-RcShDq -St $St -I $j -NoHd $NoHd }
+        elseif ($c -ceq [char]34) { $j = Skip-RcShDq -St $St -I $j -NoHd $NoHd }
         else { $j = Skip-RcShBacktick -St $St -I $j }
     }
     throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $text -Pos $I) -Message 'unclosed ${')
@@ -891,7 +898,7 @@ function Skip-RcShHeredocs {
             if ($nl -lt 0) { $le = $n; $ce = $n }
             else {
                 $le = $nl + 1
-                if ($nl -gt $P -and $text[$nl - 1] -eq [char]13) { $ce = $nl - 1 } else { $ce = $nl }
+                if ($nl -gt $P -and $text[$nl - 1] -ceq [char]13) { $ce = $nl - 1 } else { $ce = $nl }
             }
             $line = $text.Substring($P, $ce - $P)
             if ($e.Strip) { $line = $line.TrimStart([char]9) }
@@ -905,6 +912,16 @@ function Skip-RcShHeredocs {
     return $P
 }
 
+# true when the simple command that contains $Pos is a 'let' command (its arguments are arithmetic)
+function Test-RcShLetArgs {
+    param([string]$Text, [int]$Pos)
+    $seps = [char[]]@([char]59, [char]38, [char]124, [char]10, [char]40, [char]96)
+    $b = -1
+    if ($Pos -gt 0) { $b = $Text.LastIndexOfAny($seps, $Pos - 1) }
+    $seg = $Text.Substring($b + 1, $Pos - $b - 1).TrimStart()
+    return [regex]::IsMatch($seg, '^let(?:\s|$)', [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)
+}
+
 # scans code from $I; with -Paren returns the position after the matching ')' (for "$(")
 function Invoke-RcShCode {
     param($St, [int]$I, [bool]$Paren, [bool]$NoHd, [int]$OpenPos)
@@ -916,7 +933,7 @@ function Invoke-RcShCode {
         $I = $text.IndexOfAny($set, $I)
         if ($I -lt 0) { $I = $n; break }
         $c = $text[$I]
-        if ($c -eq [char]35) {
+        if ($c -ceq [char]35) {
             $wordStart = ($I -eq 0)
             if (-not $wordStart) {
                 $pc = $text[$I - 1]
@@ -924,32 +941,32 @@ function Invoke-RcShCode {
             }
             if (-not $wordStart) { $I++; continue }
             $nl = $text.IndexOf([char]10, $I)
-            if ($nl -lt 0) { $ce = $n } elseif ($nl -gt $I -and $text[$nl - 1] -eq [char]13) { $ce = $nl - 1 } else { $ce = $nl }
+            if ($nl -lt 0) { $ce = $n } elseif ($nl -gt $I -and $text[$nl - 1] -ceq [char]13) { $ce = $nl - 1 } else { $ce = $nl }
             $tok = New-RcToken -Start ($I + $St.Offset) -End ($ce + $St.Offset) -Kind 'line'
-            if ($I -eq 0 -and $ce -ge 2 -and $text[1] -eq [char]33) { $tok.Fixed = $true }
+            if ($I -eq 0 -and $ce -ge 2 -and $text[1] -ceq [char]33) { $tok.Fixed = $true }
             $St.Tokens.Add($tok)
             $I = $ce
         }
-        elseif ($c -eq [char]10) {
+        elseif ($c -ceq [char]10) {
             if ($St.Queue.Count -gt 0) { $I = Skip-RcShHeredocs -St $St -P ($I + 1) } else { $I++ }
         }
-        elseif ($c -eq [char]92) { $I += 2 }
-        elseif ($c -eq [char]39) {
+        elseif ($c -ceq [char]92) { $I += 2 }
+        elseif ($c -ceq [char]39) {
             $q = $text.IndexOf([char]39, $I + 1)
             if ($q -lt 0) { throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $text -Pos $I) -Message 'unclosed single quote') }
             $I = $q + 1
         }
-        elseif ($c -eq [char]34) { $I = Skip-RcShDq -St $St -I $I -NoHd $NoHd }
-        elseif ($c -eq [char]96) { $I = Skip-RcShBacktick -St $St -I $I }
-        elseif ($c -eq [char]36) {
+        elseif ($c -ceq [char]34) { $I = Skip-RcShDq -St $St -I $I -NoHd $NoHd }
+        elseif ($c -ceq [char]96) { $I = Skip-RcShBacktick -St $St -I $I }
+        elseif ($c -ceq [char]36) {
             $nx = [char]0
             if ($I + 1 -lt $n) { $nx = $text[$I + 1] }
-            if ($nx -eq [char]40) {
-                if ($I + 2 -lt $n -and $text[$I + 2] -eq [char]40) { $I = Invoke-RcShCode -St $St -I ($I + 2) -Paren $true -NoHd $true -OpenPos $I }
+            if ($nx -ceq [char]40) {
+                if ($I + 2 -lt $n -and $text[$I + 2] -ceq [char]40) { $I = Invoke-RcShCode -St $St -I ($I + 2) -Paren $true -NoHd $true -OpenPos $I }
                 else { $I = Invoke-RcShCode -St $St -I ($I + 2) -Paren $true -NoHd $NoHd -OpenPos $I }
             }
-            elseif ($nx -eq [char]123) { $I = Skip-RcShBrace -St $St -I $I -NoHd $NoHd }
-            elseif ($nx -eq [char]39) {
+            elseif ($nx -ceq [char]123) { $I = Skip-RcShBrace -St $St -I $I -NoHd $NoHd }
+            elseif ($nx -ceq [char]39) {
                 # $'...' : ANSI-C quoting, backslash escapes
                 $j = $I + 2
                 $set2 = [char[]]@([char]39, [char]92)
@@ -957,33 +974,34 @@ function Invoke-RcShCode {
                 while ($j -lt $n) {
                     $j = $text.IndexOfAny($set2, $j)
                     if ($j -lt 0) { break }
-                    if ($text[$j] -eq [char]92) { $j += 2; continue }
+                    if ($text[$j] -ceq [char]92) { $j += 2; continue }
                     $closed = $true; break
                 }
                 if (-not $closed) { throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $text -Pos $I) -Message 'unclosed $-quote') }
                 $I = $j + 1
             }
-            elseif ($nx -eq [char]36) { $I += 2 }
+            elseif ($nx -ceq [char]36) { $I += 2 }
             else { $I++ }
         }
-        elseif ($c -eq [char]60) {
-            if ($NoHd -or $St.NoHeredoc -or $I + 1 -ge $n -or $text[$I + 1] -ne [char]60) { $I++; continue }
-            if ($I + 2 -lt $n -and $text[$I + 2] -eq [char]60) { $I += 3; continue }     # here-string
+        elseif ($c -ceq [char]60) {
+            if ($NoHd -or $St.NoHeredoc -or $I + 1 -ge $n -or $text[$I + 1] -cne [char]60) { $I++; continue }
+            if (Test-RcShLetArgs -Text $text -Pos $I) { $I += 2; continue }     # let x=1<<2 : arithmetic shift
+            if ($I + 2 -lt $n -and $text[$I + 2] -ceq [char]60) { $I += 3; continue }     # here-string
             $j = $I + 2
             $strip = $false
-            if ($j -lt $n -and $text[$j] -eq [char]45) { $strip = $true; $j++ }
-            while ($j -lt $n -and ($text[$j] -eq [char]32 -or $text[$j] -eq [char]9)) { $j++ }
+            if ($j -lt $n -and $text[$j] -ceq [char]45) { $strip = $true; $j++ }
+            while ($j -lt $n -and ($text[$j] -ceq [char]32 -or $text[$j] -ceq [char]9)) { $j++ }
             $delim = ''
             if ($j -lt $n) {
                 $d = $text[$j]
-                if ($d -eq [char]39 -or $d -eq [char]34) {
+                if ($d -ceq [char]39 -or $d -ceq [char]34) {
                     $q = $text.IndexOf($d, $j + 1)
                     if ($q -lt 0) { throw (New-RcError -Code 3 -Line (Get-RcLineNumber -Text $text -Pos $j) -Message 'unclosed quote in here-document delimiter') }
                     $delim = $text.Substring($j + 1, $q - $j - 1)
                     $j = $q + 1
                 }
                 else {
-                    if ($d -eq [char]92) { $j++ }
+                    if ($d -ceq [char]92) { $j++ }
                     $k = $j
                     while ($k -lt $n -and -not [char]::IsWhiteSpace($text[$k]) -and ';&|()<>'.IndexOf($text[$k]) -lt 0) { $k++ }
                     $delim = $text.Substring($j, $k - $j)
@@ -993,7 +1011,18 @@ function Invoke-RcShCode {
             if ($delim.Length -gt 0) { $St.Queue.Add([pscustomobject]@{ Delim = $delim; Strip = $strip; Pos = $I }) }
             $I = [Math]::Max($j, $I + 2)
         }
-        elseif ($c -eq [char]40) { $depth++; $I++ }
+        elseif ($c -ceq [char]40) {
+            $wordStart = ($I -eq 0)
+            if (-not $wordStart) {
+                $pc = $text[$I - 1]
+                $wordStart = ([char]::IsWhiteSpace($pc) -or ';&|('.IndexOf($pc) -ge 0)
+            }
+            if ($wordStart -and $I + 1 -lt $n -and $text[$I + 1] -ceq [char]40) {
+                # (( ... )) arithmetic command: no here-documents inside
+                $I = Invoke-RcShCode -St $St -I ($I + 1) -Paren $true -NoHd $true -OpenPos $I
+            }
+            else { $depth++; $I++ }
+        }
         else {
             # ')'
             if ($depth -eq 0) { return ($I + 1) }
@@ -1012,7 +1041,7 @@ function Get-RcCommentsShell {
         Text = $Text; N = $Text.Length; Offset = $Offset; NoHeredoc = [bool]$NoHeredoc
         Tokens = (New-Object 'System.Collections.Generic.List[object]')
         Queue = (New-Object 'System.Collections.Generic.List[object]')
-        SpecialTop = [char[]]@([char]35, [char]92, [char]39, [char]34, [char]96, [char]36, [char]60, [char]10)
+        SpecialTop = [char[]]@([char]35, [char]92, [char]39, [char]34, [char]96, [char]36, [char]60, [char]10, [char]40)
         SpecialParen = [char[]]@([char]35, [char]92, [char]39, [char]34, [char]96, [char]36, [char]60, [char]10, [char]40, [char]41)
     }
     [void](Invoke-RcShCode -St $st -I 0 -Paren $false -NoHd $false -OpenPos 0)
@@ -1041,9 +1070,9 @@ function Get-RcCommentsMakefile {
             $nl = $Text.IndexOf([char]10, $p)
             if ($nl -lt 0) { $ce = $n; $le = $n } else {
                 $le = $nl + 1
-                if ($nl -gt $p -and $Text[$nl - 1] -eq [char]13) { $ce = $nl - 1 } else { $ce = $nl }
+                if ($nl -gt $p -and $Text[$nl - 1] -ceq [char]13) { $ce = $nl - 1 } else { $ce = $nl }
             }
-            if ($nl -ge 0 -and $ce -gt $p -and $Text[$ce - 1] -eq [char]92) { $p = $le; continue }
+            if ($nl -ge 0 -and $ce -gt $p -and $Text[$ce - 1] -ceq [char]92) { $p = $le; continue }
             break
         }
         $lineStart = $pos
@@ -1057,7 +1086,7 @@ function Get-RcCommentsMakefile {
         }
         if ($line.IndexOf('define', [StringComparison]::Ordinal) -ge 0 -and [regex]::IsMatch($line, $defineRe, $cs)) { $defDepth = 1; $defStart = $lineStart; continue }
 
-        if ($line.Length -gt 0 -and $line[0] -eq [char]9) {
+        if ($line.Length -gt 0 -and $line[0] -ceq [char]9) {
             try { $sub = Get-RcCommentsShell -Text $line -NoHeredoc -Offset $lineStart }
             catch {
                 $info = Convert-RcException -ErrorRecord $_
@@ -1070,7 +1099,7 @@ function Get-RcCommentsMakefile {
             continue
         }
         $h = $line.IndexOf([char]35)
-        while ($h -ge 0 -and $h -gt 0 -and $line[$h - 1] -eq [char]92) { $h = $line.IndexOf([char]35, $h + 1) }
+        while ($h -ge 0 -and $h -gt 0 -and $line[$h - 1] -ceq [char]92) { $h = $line.IndexOf([char]35, $h + 1) }
         if ($h -ge 0) { $list.Add((New-RcToken -Start ($lineStart + $h) -End $ce -Kind 'line')) }
     }
     if ($defDepth -gt 0) {
@@ -1125,7 +1154,7 @@ function Get-RcLineTable {
         if ($nl -lt 0) { $ce = $n; $end = $n }
         else {
             $end = $nl + 1
-            if ($nl -gt $pos -and $Text[$nl - 1] -eq [char]13) { $ce = $nl - 1 } else { $ce = $nl }
+            if ($nl -gt $pos -and $Text[$nl - 1] -ceq [char]13) { $ce = $nl - 1 } else { $ce = $nl }
         }
         $ls.Add($pos); $lc.Add($ce); $le.Add($end)
         $pos = $end
@@ -1253,7 +1282,7 @@ function Convert-RcText {
         $s = $starts[$l]; $ce = $cends[$l]; $e = $ends[$l]
         if (-not $perLine.ContainsKey($l)) {
             [void]$sb.Append($Text, $s, $e - $s)
-            $prevBs = ($ce -gt $s -and $Text[$ce - 1] -eq [char]92)
+            $prevBs = ($ce -gt $s -and $Text[$ce - 1] -ceq [char]92)
             continue
         }
         # merge touching ranges
@@ -1268,6 +1297,15 @@ function Convert-RcText {
         $pos = $s
         foreach ($r in $merged) {
             [void]$line.Append($Text, $pos, $r[0] - $pos)
+            if ($r[1] -gt $r[0] -and $r[1] -ge $ce) {
+                # spec 5 rule 6: trim only the whitespace right before a deletion that runs to the line's content end
+                $before = $line.ToString()
+                $tr = $before.TrimEnd([char[]]@([char]32, [char]9))
+                # rule 8: do not trim if that would leave a trailing backslash
+                if (-not ($tr.Length -gt 0 -and $tr[$tr.Length - 1] -ceq [char]92)) {
+                    [void]$line.Remove($tr.Length, $before.Length - $tr.Length)
+                }
+            }
             if ($JoinWithSpace -and $r[0] -gt $s -and $r[1] -lt $ce -and
                 -not [char]::IsWhiteSpace($Text[$r[0] - 1]) -and -not [char]::IsWhiteSpace($Text[$r[1]])) {
                 [void]$line.Append([char]32)
@@ -1287,18 +1325,15 @@ function Convert-RcText {
             if ($l -eq $count - 1 -and $e -eq $ce) { $lastDeleted = $true }
             continue
         }
-        $trimmed = $content.TrimEnd([char[]]@([char]32, [char]9))
-        # rule 8: do not trim if that would leave a trailing backslash
-        if ($trimmed.Length -gt 0 -and $trimmed[$trimmed.Length - 1] -eq [char]92) { $trimmed = $content }
-        [void]$sb.Append($trimmed)
+        [void]$sb.Append($content)
         [void]$sb.Append($Text, $ce, $e - $ce)
-        $prevBs = ($trimmed.Length -gt 0 -and $trimmed[$trimmed.Length - 1] -eq [char]92)
+        $prevBs = ($content.Length -gt 0 -and $content[$content.Length - 1] -ceq [char]92)
     }
 
     $out = $sb.ToString()
-    if ($lastDeleted -and $out.Length -gt 0 -and $out[$out.Length - 1] -eq [char]10) {
+    if ($lastDeleted -and $out.Length -gt 0 -and $out[$out.Length - 1] -ceq [char]10) {
         $cut = 1
-        if ($out.Length -ge 2 -and $out[$out.Length - 2] -eq [char]13) { $cut = 2 }
+        if ($out.Length -ge 2 -and $out[$out.Length - 2] -ceq [char]13) { $cut = 2 }
         $out = $out.Substring(0, $out.Length - $cut)
     }
     return $out
@@ -1335,7 +1370,7 @@ function Invoke-RcFile {
         Set-RcKeepFlags -Tokens $tokens -Text $text -Settings $Settings -Language $lang
         $removed = 0; $kept = 0
         foreach ($t in $tokens) { if ($t.Keep) { $kept++ } else { $removed++ } }
-        $newText = Convert-RcText -Text $text -Tokens $tokens -JoinWithSpace ($lang -ne 'html')
+        $newText = Convert-RcText -Text $text -Tokens $tokens -JoinWithSpace ($lang -cne 'html')
 
         if (-not $DryRun) {
             $write = $true

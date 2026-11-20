@@ -14,9 +14,9 @@ function Convert-RcGlobToRegex {
     $i = 0
     while ($i -lt $n) {
         $c = $g[$i]
-        if ($c -eq [char]42) {
-            if ($i + 1 -lt $n -and $g[$i + 1] -eq [char]42) {
-                if ($i + 2 -lt $n -and $g[$i + 2] -eq [char]47) {
+        if ($c -ceq [char]42) {
+            if ($i + 1 -lt $n -and $g[$i + 1] -ceq [char]42) {
+                if ($i + 2 -lt $n -and $g[$i + 2] -ceq [char]47) {
                     [void]$sb.Append('(?:.*/)?')
                     $i += 3
                 }
@@ -30,11 +30,11 @@ function Convert-RcGlobToRegex {
                 $i++
             }
         }
-        elseif ($c -eq [char]47 -and ($n - $i) -eq 3 -and $g[$i + 1] -eq [char]42 -and $g[$i + 2] -eq [char]42) {
+        elseif ($c -ceq [char]47 -and ($n - $i) -eq 3 -and $g[$i + 1] -ceq [char]42 -and $g[$i + 2] -ceq [char]42) {
             [void]$sb.Append('(?:/.*)?')
             $i += 3
         }
-        elseif ($c -eq [char]63) {
+        elseif ($c -ceq [char]63) {
             [void]$sb.Append('[^/]')
             $i++
         }
@@ -142,6 +142,9 @@ function Invoke-RcBatch {
             if (-not [IO.Directory]::Exists($rootDir)) { throw (New-RcError -Code 9 -Message "target directory not found: $rootDir") }
             if ($s.OutputMode -eq 'outDir' -and (Test-RcPathInside -Out $s.OutDir -Root $rootDir)) {
                 throw (New-RcError -Code 9 -Message "output.outDir must not be the target directory or inside it: $($s.OutDir)")
+            }
+            if ($s.OutputMode -eq 'outDir' -and (Test-RcPathInside -Out $rootDir -Root $s.OutDir)) {
+                throw (New-RcError -Code 9 -Message "the target directory must not be inside output.outDir (source files could be overwritten): $($s.OutDir)")
             }
         }
         catch {
