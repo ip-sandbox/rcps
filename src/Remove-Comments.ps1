@@ -1,0 +1,743 @@
+﻿param([string]$Path, [string]$Config, [string]$OutPath, [switch]$DryRun)
+
+# Remove-Comments.ps1 : single-file comment remover (see docs/spec.md, docs/design.md)
+# All functions carry the "Rc" prefix. No Set-StrictMode at script level (dot-source safe).
+
+# ---------------------------------------------------------------------------
+# errors / results
+# ---------------------------------------------------------------------------
+
+function New-RcError {
+    param([int]$Code, [string]$Message, [int]$Line = 0)
+    $ex = New-Object System.Exception -ArgumentList $Message
+    $ex.Data['RcExitCode'] = $Code
+    if ($Line -gt 0) { $ex.Data['RcLine'] = $Line }
+    return $ex
+}
+
+# ErrorRecord -> @{ Code; Message; Line }  (design 2.4)
+function Convert-RcException {
+    param($ErrorRecord)
+    $e = $ErrorRecord.Exception
+    while ($null -ne $e) {
+        if ($e.Data.Contains('RcExitCode')) {
+            $line = 0
+            if ($e.Data.Contains('RcLine')) { $line = [int]$e.Data['RcLine'] }
+            return @{ Code = [int]$e.Data['RcExitCode']; Message = [string]$e.Message; Line = $line }
+        }
+        if ($e -is [System.Text.RegularExpressions.RegexMatchTimeoutException]) {
+            return @{ Code = 6; Message = 'regex match timed out'; Line = 0 }
+        }
+        if ($e -is [System.IO.IOException] -or $e -is [System.UnauthorizedAccessException]) {
+            return @{ Code = 5; Message = [string]$e.Message; Line = 0 }
+        }
+        $e = $e.InnerException
+    }
+    $root = $ErrorRecord.Exception
+    $at = ''
+    if ($null -ne $ErrorRecord.InvocationInfo) { $at = " (script line $($ErrorRecord.InvocationInfo.ScriptLineNumber))" }
+    return @{ Code = 1; Message = "internal error: $($root.GetType().FullName): $($root.Message)$at"; Line = 0 }
+}
+
+function Format-RcMessage {
+    param([string]$Display, $Info)
+    if ($Info.Line -gt 0) { return "${Display}:$($Info.Line): $($Info.Message)" }
+    return "${Display}: $($Info.Message)"
+}
+
+function New-RcResult {
+    param([int]$ExitCode, [string]$Status, [string]$Display, [int]$Removed = 0, [int]$Kept = 0, [string]$Message = '')
+    $tab = "`t"
+    switch ($Status) {
+        'OK'          { $line = "OK${tab}${Display}${tab}removed=${Removed}${tab}kept=${Kept}" }
+        'UNSUPPORTED' { $line = "UNSUPPORTED${tab}${Display}" }
+        default       { $line = "ERROR${tab}${Display}${tab}code=${ExitCode}" }
+    }
+    return [pscustomobject]@{
+        ExitCode = $ExitCode; Status = $Status; Removed = $Removed; Kept = $Kept; Message = $Message; Line = $line
+    }
+}
+
+# ---------------------------------------------------------------------------
+# settings (design 2.2, spec ch.10)
+# ---------------------------------------------------------------------------
+
+function Resolve-RcPath {
+    param([string]$PathText, [string]$BaseDir)
+    if (-not $BaseDir) { $BaseDir = (Get-Location).ProviderPath }
+    if ([IO.Path]::IsPathRooted($PathText)) { return [IO.Path]::GetFullPath($PathText) }
+    return [IO.Path]::GetFullPath((Join-Path $BaseDir $PathText))
+}
+
+# JSON object -> hashtable of its keys (case-sensitive key check, "_" keys ignored)
+function Get-RcObjectMap {
+    param($Obj, [string[]]$Allowed, [string]$Where)
+    if ($null -eq $Obj -or $Obj -isnot [System.Management.Automation.PSCustomObject]) {
+        throw (New-RcError -Code 9 -Message "$Where must be an object")
+    }
+    $map = @{}
+    foreach ($p in $Obj.PSObject.Properties) {
+        $name = [string]$p.Name
+        if ($name.StartsWith('_')) { continue }
+        if (-not ($Allowed -ccontains $name)) {
+            throw (New-RcError -Code 9 -Message "unknown key '$name' in $Where")
+        }
+        $map[$name] = $p.Value
+    }
+    return $map
+}
+
+function Get-RcString {
+    param($Value, [string]$Where)
+    if ($Value -isnot [string]) { throw (New-RcError -Code 9 -Message "$Where must be a string") }
+    if ($Value.Length -eq 0) { throw (New-RcError -Code 9 -Message "$Where must not be empty") }
+    return $Value
+}
+
+function Get-RcBool {
+    param($Value, [string]$Where)
+    if ($Value -isnot [bool]) { throw (New-RcError -Code 9 -Message "$Where must be true or false") }
+    return $Value
+}
+
+function Get-RcStringArray {
+    param($Value, [string]$Where)
+    if ($Value -isnot [Array]) { throw (New-RcError -Code 9 -Message "$Where must be an array of strings") }
+    $list = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($v in $Value) {
+        $list.Add((Get-RcString -Value $v -Where "$Where[]"))
+    }
+    return , $list.ToArray()
+}
+
+function Get-RcDefaultLanguages {
+    return @{
+        cpp        = @{ Extensions = [string[]]@('.c', '.cpp', '.cc', '.h', '.hpp', '.hh'); FileNames = [string[]]@(); KeepPatterns = [string[]]@() }
+        java       = @{ Extensions = [string[]]@('.java'); FileNames = [string[]]@(); KeepPatterns = [string[]]@() }
+        typescript = @{ Extensions = [string[]]@('.ts'); FileNames = [string[]]@(); KeepPatterns = [string[]]@() }
+        css        = @{ Extensions = [string[]]@('.css'); FileNames = [string[]]@(); KeepPatterns = [string[]]@() }
+        html       = @{ Extensions = [string[]]@('.html'); FileNames = [string[]]@(); KeepPatterns = [string[]]@() }
+        shell      = @{ Extensions = [string[]]@('.sh'); FileNames = [string[]]@(); KeepPatterns = [string[]]@() }
+        makefile   = @{ Extensions = [string[]]@('.mk'); FileNames = [string[]]@('Makefile', 'makefile', 'GNUmakefile'); KeepPatterns = [string[]]@() }
+        conf       = @{ Extensions = [string[]]@('.conf'); FileNames = [string[]]@(); KeepPatterns = [string[]]@() }
+    }
+}
+
+function Read-RcSettings {
+    param([string]$ConfigPath, [string]$ScriptDir)
+    if (-not $ScriptDir) { $ScriptDir = $PSScriptRoot }
+    $cwd = (Get-Location).ProviderPath
+
+    # search order: -Config > ./remove-comments.json > <script dir>/remove-comments.json
+    $cfgFile = $null
+    if ($ConfigPath) {
+        $cfgFile = Resolve-RcPath -PathText $ConfigPath -BaseDir $cwd
+        if (-not [IO.File]::Exists($cfgFile)) {
+            throw (New-RcError -Code 9 -Message "config file not found: $ConfigPath")
+        }
+    }
+    else {
+        $c1 = Join-Path $cwd 'remove-comments.json'
+        if ([IO.File]::Exists($c1)) { $cfgFile = $c1 }
+        elseif ($ScriptDir) {
+            $c2 = Join-Path $ScriptDir 'remove-comments.json'
+            if ([IO.File]::Exists($c2)) { $cfgFile = $c2 }
+        }
+    }
+    $configDir = $cwd
+    if ($cfgFile) { $configDir = [IO.Path]::GetDirectoryName($cfgFile) }
+
+    $top = @{}
+    if ($cfgFile) {
+        $root = $null
+        try {
+            $json = [IO.File]::ReadAllText($cfgFile, (New-Object System.Text.UTF8Encoding -ArgumentList $false))
+            if ($json.TrimStart().StartsWith('[')) { throw 'top level must be an object' }
+            $root = ConvertFrom-Json -InputObject $json -ErrorAction Stop
+        }
+        catch {
+            throw (New-RcError -Code 9 -Message "cannot parse config '$cfgFile': $($_.Exception.Message)")
+        }
+        $top = Get-RcObjectMap -Obj $root -Where 'config' -Allowed @(
+            'version', 'output', 'encoding', 'keep', 'keepRegion', 'languages', 'batch', 'exclude', 'excludeFiles', 'log')
+    }
+
+    $s = @{
+        ConfigPath       = $cfgFile
+        ConfigDir        = $configDir
+        OutputMode       = $null
+        OutDir           = $null
+        Backup           = $false
+        EncodingMode     = 'auto'
+        KeepPatterns     = [string[]]@()
+        KeepRegex        = @()
+        CaseSensitive    = $true
+        RegionStart      = '% DEL START'
+        RegionEnd        = '% DEL END'
+        ExtMap           = @{}
+        NameMap          = @{}
+        LangKeepPatterns = @{}
+        BatchRoot        = $null
+        Exclude          = [string[]]@()
+        LogPath          = $null
+    }
+
+    if ($top.ContainsKey('version')) {
+        $v = $top['version']
+        if (-not (($v -is [int] -or $v -is [long]) -and $v -eq 1)) {
+            throw (New-RcError -Code 9 -Message 'version must be the integer 1')
+        }
+    }
+
+    if ($top.ContainsKey('output')) {
+        $o = Get-RcObjectMap -Obj $top['output'] -Where 'output' -Allowed @('mode', 'outDir', 'backup')
+        if ($o.ContainsKey('mode')) {
+            $m = $o['mode']
+            if ($m -isnot [string] -or -not (@('outDir', 'inPlace') -ccontains $m)) {
+                throw (New-RcError -Code 9 -Message "output.mode must be 'outDir' or 'inPlace'")
+            }
+            $s.OutputMode = $m
+        }
+        if ($o.ContainsKey('outDir')) {
+            $s.OutDir = Resolve-RcPath -PathText (Get-RcString -Value $o['outDir'] -Where 'output.outDir') -BaseDir $configDir
+        }
+        if ($o.ContainsKey('backup')) { $s.Backup = Get-RcBool -Value $o['backup'] -Where 'output.backup' }
+    }
+
+    if ($top.ContainsKey('encoding')) {
+        $e = $top['encoding']
+        if ($e -isnot [string] -or -not (@('auto', 'utf8', 'sjis') -ccontains $e)) {
+            throw (New-RcError -Code 9 -Message "encoding must be 'auto', 'utf8' or 'sjis'")
+        }
+        $s.EncodingMode = $e
+    }
+
+    if ($top.ContainsKey('keep')) {
+        $k = Get-RcObjectMap -Obj $top['keep'] -Where 'keep' -Allowed @('patterns', 'regex', 'caseSensitive')
+        if ($k.ContainsKey('patterns')) { $s.KeepPatterns = Get-RcStringArray -Value $k['patterns'] -Where 'keep.patterns' }
+        if ($k.ContainsKey('caseSensitive')) { $s.CaseSensitive = Get-RcBool -Value $k['caseSensitive'] -Where 'keep.caseSensitive' }
+        if ($k.ContainsKey('regex')) {
+            $srcs = Get-RcStringArray -Value $k['regex'] -Where 'keep.regex'
+            $opts = [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+            if (-not $s.CaseSensitive) { $opts = $opts -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase }
+            $list = New-Object 'System.Collections.Generic.List[object]'
+            foreach ($src in $srcs) {
+                try { $rx = New-Object System.Text.RegularExpressions.Regex -ArgumentList $src, $opts, ([TimeSpan]::FromSeconds(1)) }
+                catch { throw (New-RcError -Code 9 -Message "invalid regex in keep.regex: '$src': $($_.Exception.Message)") }
+                $list.Add($rx)
+            }
+            $s.KeepRegex = $list.ToArray()
+        }
+    }
+
+    if ($top.ContainsKey('keepRegion')) {
+        $r = Get-RcObjectMap -Obj $top['keepRegion'] -Where 'keepRegion' -Allowed @('start', 'end')
+        if ($r.ContainsKey('start')) { $s.RegionStart = Get-RcString -Value $r['start'] -Where 'keepRegion.start' }
+        if ($r.ContainsKey('end')) { $s.RegionEnd = Get-RcString -Value $r['end'] -Where 'keepRegion.end' }
+    }
+    if ([string]::Equals($s.RegionStart, $s.RegionEnd, [StringComparison]::Ordinal)) {
+        throw (New-RcError -Code 9 -Message 'keepRegion.start and keepRegion.end must differ')
+    }
+
+    # languages: only the keys written replace the defaults
+    $langNames = @('cpp', 'java', 'typescript', 'css', 'html', 'shell', 'makefile', 'conf')
+    $defs = Get-RcDefaultLanguages
+    if ($top.ContainsKey('languages')) {
+        $lm = Get-RcObjectMap -Obj $top['languages'] -Where 'languages' -Allowed $langNames
+        foreach ($ln in $langNames) {
+            if (-not $lm.ContainsKey($ln)) { continue }
+            $lo = Get-RcObjectMap -Obj $lm[$ln] -Where "languages.$ln" -Allowed @('extensions', 'fileNames', 'keepPatterns')
+            if ($lo.ContainsKey('extensions')) {
+                $exts = Get-RcStringArray -Value $lo['extensions'] -Where "languages.$ln.extensions"
+                foreach ($x in $exts) {
+                    if (-not $x.StartsWith('.') -or $x.Length -lt 2) {
+                        throw (New-RcError -Code 9 -Message "languages.$ln.extensions: '$x' must start with '.'")
+                    }
+                }
+                $defs[$ln].Extensions = $exts
+            }
+            if ($lo.ContainsKey('fileNames')) {
+                $names = Get-RcStringArray -Value $lo['fileNames'] -Where "languages.$ln.fileNames"
+                foreach ($x in $names) {
+                    if ($x.IndexOf([char]47) -ge 0 -or $x.IndexOf([char]92) -ge 0) {
+                        throw (New-RcError -Code 9 -Message "languages.$ln.fileNames: '$x' must be a file name without path")
+                    }
+                }
+                $defs[$ln].FileNames = $names
+            }
+            if ($lo.ContainsKey('keepPatterns')) {
+                $defs[$ln].KeepPatterns = Get-RcStringArray -Value $lo['keepPatterns'] -Where "languages.$ln.keepPatterns"
+            }
+        }
+    }
+    foreach ($ln in $langNames) {
+        foreach ($x in $defs[$ln].Extensions) {
+            $key = $x.ToLowerInvariant()
+            if ($s.ExtMap.ContainsKey($key) -and $s.ExtMap[$key] -ne $ln) {
+                throw (New-RcError -Code 9 -Message "extension '$x' is assigned to both '$($s.ExtMap[$key])' and '$ln'")
+            }
+            $s.ExtMap[$key] = $ln
+        }
+        foreach ($x in $defs[$ln].FileNames) {
+            $key = $x.ToLowerInvariant()
+            if ($s.NameMap.ContainsKey($key) -and $s.NameMap[$key] -ne $ln) {
+                throw (New-RcError -Code 9 -Message "file name '$x' is assigned to both '$($s.NameMap[$key])' and '$ln'")
+            }
+            $s.NameMap[$key] = $ln
+        }
+        $s.LangKeepPatterns[$ln] = $defs[$ln].KeepPatterns
+    }
+
+    if ($top.ContainsKey('batch')) {
+        $b = Get-RcObjectMap -Obj $top['batch'] -Where 'batch' -Allowed @('root')
+        if ($b.ContainsKey('root')) {
+            $s.BatchRoot = Resolve-RcPath -PathText (Get-RcString -Value $b['root'] -Where 'batch.root') -BaseDir $configDir
+        }
+    }
+
+    $ex = New-Object 'System.Collections.Generic.List[string]'
+    if ($top.ContainsKey('exclude')) {
+        foreach ($x in (Get-RcStringArray -Value $top['exclude'] -Where 'exclude')) { $ex.Add($x) }
+    }
+    if ($top.ContainsKey('excludeFiles')) {
+        foreach ($f in (Get-RcStringArray -Value $top['excludeFiles'] -Where 'excludeFiles')) {
+            $full = Resolve-RcPath -PathText $f -BaseDir $configDir
+            try { $content = [IO.File]::ReadAllText($full, (New-Object System.Text.UTF8Encoding -ArgumentList $false)) }
+            catch { throw (New-RcError -Code 9 -Message "cannot read excludeFiles '$f': $($_.Exception.Message)") }
+            foreach ($ln in ($content -split "\r?\n")) {
+                $t = $ln.Trim()
+                if ($t.Length -eq 0 -or $t.StartsWith('#')) { continue }
+                $ex.Add($t)
+            }
+        }
+    }
+    $s.Exclude = $ex.ToArray()
+
+    if ($top.ContainsKey('log')) {
+        $lg = Get-RcObjectMap -Obj $top['log'] -Where 'log' -Allowed @('path')
+        if ($lg.ContainsKey('path')) {
+            $s.LogPath = Resolve-RcPath -PathText (Get-RcString -Value $lg['path'] -Where 'log.path') -BaseDir $configDir
+        }
+    }
+    return $s
+}
+
+function Get-RcLanguage {
+    param($Settings, [string]$FilePath)
+    $name = [IO.Path]::GetFileName($FilePath)
+    if (-not $name) { return $null }
+    $lower = $name.ToLowerInvariant()
+    if ($Settings.NameMap.ContainsKey($lower)) { return $Settings.NameMap[$lower] }
+    # longest suffix first (".d.ts" before ".ts")
+    $i = $lower.IndexOf([char]46)
+    while ($i -ge 0) {
+        $suffix = $lower.Substring($i)
+        if ($Settings.ExtMap.ContainsKey($suffix)) { return $Settings.ExtMap[$suffix] }
+        $i = $lower.IndexOf([char]46, $i + 1)
+    }
+    return $null
+}
+
+# ---------------------------------------------------------------------------
+# file I/O (design 5)
+# ---------------------------------------------------------------------------
+
+function Get-RcCp932 {
+    try { [Text.Encoding]::RegisterProvider([Text.CodePagesEncodingProvider]::Instance) } catch { }
+    return [Text.Encoding]::GetEncoding(932, [Text.EncoderFallback]::ExceptionFallback, [Text.DecoderFallback]::ExceptionFallback)
+}
+
+function Test-RcBytesEqual {
+    param([byte[]]$A, [byte[]]$B, [int]$OffsetA)
+    if ($A.Length - $OffsetA -ne $B.Length) { return $false }
+    for ($i = 0; $i -lt $B.Length; $i++) {
+        if ($A[$OffsetA + $i] -ne $B[$i]) { return $false }
+    }
+    return $true
+}
+
+function Read-RcTextFile {
+    param([string]$Path, [string]$EncodingMode = 'auto')
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    $n = $bytes.Length
+    $utf8 = New-Object System.Text.UTF8Encoding -ArgumentList $false, $true
+    $enc = $null
+    $bomLen = 0
+    $isUtf16 = $false
+
+    if ($EncodingMode -eq 'sjis') {
+        $enc = Get-RcCp932
+    }
+    elseif ($n -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        $enc = $utf8; $bomLen = 3
+    }
+    elseif ($EncodingMode -eq 'auto' -and $n -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+        $enc = New-Object System.Text.UnicodeEncoding -ArgumentList $false, $false, $true; $bomLen = 2; $isUtf16 = $true
+    }
+    elseif ($EncodingMode -eq 'auto' -and $n -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) {
+        $enc = New-Object System.Text.UnicodeEncoding -ArgumentList $true, $false, $true; $bomLen = 2; $isUtf16 = $true
+    }
+    else {
+        $enc = $utf8
+    }
+
+    $text = $null
+    try { $text = $enc.GetString($bytes, $bomLen, $n - $bomLen) }
+    catch {
+        if ($EncodingMode -eq 'auto' -and $bomLen -eq 0 -and -not $isUtf16) {
+            # not valid UTF-8 -> CP932
+            $enc = Get-RcCp932
+            try { $text = $enc.GetString($bytes, 0, $n) }
+            catch { throw (New-RcError -Code 5 -Message 'cannot decode file as UTF-8 or Shift_JIS') }
+        }
+        else {
+            throw (New-RcError -Code 5 -Message "cannot decode file with the selected encoding ($EncodingMode)")
+        }
+    }
+
+    # NUL check = binary
+    if ($isUtf16) {
+        if ($text.IndexOf([char]0) -ge 0) { throw (New-RcError -Code 5 -Message 'file contains NUL (binary file)') }
+    }
+    elseif ([Array]::IndexOf($bytes, [byte]0) -ge 0) {
+        throw (New-RcError -Code 5 -Message 'file contains NUL (binary file)')
+    }
+
+    # round trip: the decoded text must re-encode to the same bytes
+    $back = $null
+    try { $back = $enc.GetBytes($text) }
+    catch { throw (New-RcError -Code 5 -Message 'text does not round-trip through its encoding') }
+    if (-not (Test-RcBytesEqual -A $bytes -B $back -OffsetA $bomLen)) {
+        throw (New-RcError -Code 5 -Message 'text does not round-trip through its encoding')
+    }
+
+    $bom = New-Object byte[] $bomLen
+    if ($bomLen -gt 0) { [Array]::Copy($bytes, 0, $bom, 0, $bomLen) }
+    return @{ Text = $text; Encoding = $enc; Bom = $bom }
+}
+
+function Write-RcTextFile {
+    param([string]$Path, [string]$Text, $Encoding, [byte[]]$Bom)
+    $tmp = $null
+    try {
+        $body = $Encoding.GetBytes($Text)
+        if ($null -eq $Bom) { $Bom = New-Object byte[] 0 }
+        $all = New-Object byte[] ($Bom.Length + $body.Length)
+        [Array]::Copy($Bom, 0, $all, 0, $Bom.Length)
+        [Array]::Copy($body, 0, $all, $Bom.Length, $body.Length)
+        $dir = [IO.Path]::GetDirectoryName($Path)
+        if ($dir -and -not [IO.Directory]::Exists($dir)) { [void][IO.Directory]::CreateDirectory($dir) }
+        $tmp = "$Path.rctmp-" + [Guid]::NewGuid().ToString('N')
+        [IO.File]::WriteAllBytes($tmp, $all)
+        if ([IO.File]::Exists($Path)) { [IO.File]::Replace($tmp, $Path, [NullString]::Value) }
+        else { [IO.File]::Move($tmp, $Path) }
+    }
+    catch {
+        $msg = $_.Exception.Message
+        if ($tmp -and [IO.File]::Exists($tmp)) { try { [IO.File]::Delete($tmp) } catch { } }
+        throw (New-RcError -Code 5 -Message "write failed: $msg")
+    }
+}
+
+# ---------------------------------------------------------------------------
+# lexers
+# ---------------------------------------------------------------------------
+
+function New-RcToken {
+    param([int]$Start, [int]$End, [string]$Kind = 'line', [bool]$Fixed = $false)
+    return [pscustomobject]@{ Start = $Start; End = $End; Kind = $Kind; Fixed = $Fixed; Keep = $false }
+}
+
+# conf: a line whose first non-blank char is '#' (design 3.8)
+function Get-RcCommentsConf {
+    param([string]$Text)
+    $list = New-Object 'System.Collections.Generic.List[object]'
+    $n = $Text.Length
+    $pos = 0
+    while ($pos -lt $n) {
+        $nl = $Text.IndexOf([char]10, $pos)
+        if ($nl -lt 0) { $lineEnd = $n; $ce = $n }
+        else {
+            $lineEnd = $nl + 1
+            if ($nl -gt $pos -and $Text[$nl - 1] -eq [char]13) { $ce = $nl - 1 } else { $ce = $nl }
+        }
+        $i = $pos
+        while ($i -lt $ce -and [char]::IsWhiteSpace($Text[$i])) { $i++ }
+        if ($i -lt $ce -and $Text[$i] -eq [char]35) {
+            $list.Add((New-RcToken -Start $i -End $ce -Kind 'line'))
+        }
+        $pos = $lineEnd
+    }
+    return , $list
+}
+
+function Get-RcComments {
+    param([string]$Language, [string]$Text)
+    if ($Language -ceq 'conf') {
+        $t = Get-RcCommentsConf -Text $Text
+        return , $t
+    }
+    if (@('cpp', 'java', 'typescript', 'css', 'html', 'shell', 'makefile') -ccontains $Language) {
+        throw (New-RcError -Code 1 -Message "not implemented: $Language")
+    }
+    throw (New-RcError -Code 1 -Message "unknown language: $Language")
+}
+
+# ---------------------------------------------------------------------------
+# keep flags (design 4.1, 4.2)
+# ---------------------------------------------------------------------------
+
+# lines: Start / ContentEnd (before CR LF) / End (after newline); no phantom line after a final newline
+function Get-RcLineTable {
+    param([string]$Text)
+    $ls = New-Object 'System.Collections.Generic.List[int]'
+    $lc = New-Object 'System.Collections.Generic.List[int]'
+    $le = New-Object 'System.Collections.Generic.List[int]'
+    $n = $Text.Length
+    $pos = 0
+    while ($pos -lt $n) {
+        $nl = $Text.IndexOf([char]10, $pos)
+        if ($nl -lt 0) { $ce = $n; $end = $n }
+        else {
+            $end = $nl + 1
+            if ($nl -gt $pos -and $Text[$nl - 1] -eq [char]13) { $ce = $nl - 1 } else { $ce = $nl }
+        }
+        $ls.Add($pos); $lc.Add($ce); $le.Add($end)
+        $pos = $end
+    }
+    return @{ Start = $ls.ToArray(); ContentEnd = $lc.ToArray(); End = $le.ToArray() }
+}
+
+function Get-RcLineIndex {
+    param([int[]]$Starts, [int]$Pos)
+    $idx = [Array]::BinarySearch($Starts, $Pos)
+    if ($idx -lt 0) { $idx = (-bnot $idx) - 1 }
+    if ($idx -lt 0) { $idx = 0 }
+    return $idx
+}
+
+function Set-RcKeepFlags {
+    param($Tokens, [string]$Text, $Settings, [string]$Language)
+    $table = Get-RcLineTable -Text $Text
+    $starts = $table.Start
+    $ord = [StringComparison]::Ordinal
+
+    # token -> first / last line index
+    $firstLine = New-Object 'System.Collections.Generic.List[int]'
+    $lastLine = New-Object 'System.Collections.Generic.List[int]'
+    foreach ($t in $Tokens) {
+        $firstLine.Add((Get-RcLineIndex -Starts $starts -Pos $t.Start))
+        $lastLine.Add((Get-RcLineIndex -Starts $starts -Pos ([Math]::Max($t.Start, $t.End - 1))))
+    }
+
+    # 4.1 regions
+    $ranges = New-Object 'System.Collections.Generic.List[int[]]'
+    $open = $false
+    $openLine = 0
+    $k = 0
+    foreach ($t in $Tokens) {
+        $tt = $Text.Substring($t.Start, $t.End - $t.Start)
+        $hasStart = $tt.IndexOf($Settings.RegionStart, $ord) -ge 0
+        $hasEnd = $tt.IndexOf($Settings.RegionEnd, $ord) -ge 0
+        if ($hasStart) {
+            if ($open) {
+                throw (New-RcError -Code 4 -Line ($firstLine[$k] + 1) -Message "keep region START inside a region opened at line $($openLine + 1)")
+            }
+            $open = $true
+            $openLine = $firstLine[$k]
+        }
+        if ($hasEnd) {
+            if (-not $open) {
+                throw (New-RcError -Code 4 -Line ($firstLine[$k] + 1) -Message 'keep region END without START')
+            }
+            $open = $false
+            $ranges.Add([int[]]@($openLine, $lastLine[$k]))
+        }
+        $k++
+    }
+    if ($open) {
+        throw (New-RcError -Code 4 -Line ($openLine + 1) -Message 'keep region START has no END')
+    }
+
+    # 4.2 patterns
+    $pats = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($p in $Settings.KeepPatterns) { $pats.Add($p) }
+    if ($Language -and $Settings.LangKeepPatterns.ContainsKey($Language)) {
+        foreach ($p in $Settings.LangKeepPatterns[$Language]) { $pats.Add($p) }
+    }
+    if ($Settings.CaseSensitive) { $cmp = [StringComparison]::Ordinal } else { $cmp = [StringComparison]::OrdinalIgnoreCase }
+
+    $k = 0
+    foreach ($t in $Tokens) {
+        $keep = [bool]$t.Fixed
+        if (-not $keep) {
+            foreach ($r in $ranges) {
+                if ($firstLine[$k] -le $r[1] -and $lastLine[$k] -ge $r[0]) { $keep = $true; break }
+            }
+        }
+        if (-not $keep -and ($pats.Count -gt 0 -or $Settings.KeepRegex.Count -gt 0)) {
+            $tt = $Text.Substring($t.Start, $t.End - $t.Start)
+            foreach ($p in $pats) {
+                if ($tt.IndexOf($p, $cmp) -ge 0) { $keep = $true; break }
+            }
+            if (-not $keep -and $Settings.KeepRegex.Count -gt 0) {
+                if ($tt.IndexOf([char]10) -ge 0) { $lines = [regex]::Split($tt, '\r?\n') } else { $lines = @($tt) }
+                :lineLoop foreach ($line in $lines) {
+                    foreach ($rx in $Settings.KeepRegex) {
+                        if ($rx.IsMatch($line)) { $keep = $true; break lineLoop }
+                    }
+                }
+            }
+        }
+        $t.Keep = $keep
+        $k++
+    }
+}
+
+# ---------------------------------------------------------------------------
+# rewrite (design 4.3)
+# ---------------------------------------------------------------------------
+
+function Convert-RcText {
+    param([string]$Text, $Tokens)
+    $table = Get-RcLineTable -Text $Text
+    $starts = $table.Start
+    $cends = $table.ContentEnd
+    $ends = $table.End
+    $count = $starts.Length
+
+    # per-line deletion ranges
+    $perLine = @{}
+    foreach ($t in $Tokens) {
+        if ($t.Keep) { continue }
+        $l1 = Get-RcLineIndex -Starts $starts -Pos $t.Start
+        $l2 = Get-RcLineIndex -Starts $starts -Pos ([Math]::Max($t.Start, $t.End - 1))
+        for ($l = $l1; $l -le $l2; $l++) {
+            $a = [Math]::Max($t.Start, $starts[$l])
+            $b = [Math]::Min($t.End, $cends[$l])
+            if ($b -lt $a) { $b = $a }
+            if (-not $perLine.ContainsKey($l)) { $perLine[$l] = New-Object 'System.Collections.Generic.List[int[]]' }
+            $perLine[$l].Add([int[]]@($a, $b))
+        }
+    }
+
+    $sb = New-Object System.Text.StringBuilder
+    $lastDeleted = $false
+    for ($l = 0; $l -lt $count; $l++) {
+        $s = $starts[$l]; $ce = $cends[$l]; $e = $ends[$l]
+        if (-not $perLine.ContainsKey($l)) {
+            [void]$sb.Append($Text, $s, $e - $s)
+            continue
+        }
+        # merge touching ranges
+        $merged = New-Object 'System.Collections.Generic.List[int[]]'
+        foreach ($r in $perLine[$l]) {
+            if ($merged.Count -gt 0 -and $r[0] -le $merged[$merged.Count - 1][1]) {
+                if ($r[1] -gt $merged[$merged.Count - 1][1]) { $merged[$merged.Count - 1][1] = $r[1] }
+            }
+            else { $merged.Add([int[]]@($r[0], $r[1])) }
+        }
+        $line = New-Object System.Text.StringBuilder
+        $pos = $s
+        foreach ($r in $merged) {
+            [void]$line.Append($Text, $pos, $r[0] - $pos)
+            if ($r[0] -gt $s -and $r[1] -lt $ce -and
+                -not [char]::IsWhiteSpace($Text[$r[0] - 1]) -and -not [char]::IsWhiteSpace($Text[$r[1]])) {
+                [void]$line.Append([char]32)
+            }
+            $pos = $r[1]
+        }
+        [void]$line.Append($Text, $pos, $ce - $pos)
+        $content = $line.ToString()
+        if ([string]::IsNullOrWhiteSpace($content)) {
+            if ($l -eq $count - 1 -and $e -eq $ce) { $lastDeleted = $true }
+            continue
+        }
+        [void]$sb.Append($content.TrimEnd([char[]]@([char]32, [char]9)))
+        [void]$sb.Append($Text, $ce, $e - $ce)
+    }
+
+    $out = $sb.ToString()
+    if ($lastDeleted -and $out.Length -gt 0 -and $out[$out.Length - 1] -eq [char]10) {
+        $cut = 1
+        if ($out.Length -ge 2 -and $out[$out.Length - 2] -eq [char]13) { $cut = 2 }
+        $out = $out.Substring(0, $out.Length - $cut)
+    }
+    return $out
+}
+
+# ---------------------------------------------------------------------------
+# one file (design 2.5)
+# ---------------------------------------------------------------------------
+
+function Invoke-RcFile {
+    param($Settings, [string]$Path, [string]$OutPath, [switch]$DryRun, [string]$DisplayPath)
+    Set-StrictMode -Version 2.0
+    $ErrorActionPreference = 'Stop'
+    if (-not $DisplayPath) { $DisplayPath = $Path }
+    try {
+        if (-not $Path) { throw (New-RcError -Code 9 -Message 'path is required') }
+        $full = Resolve-RcPath -PathText $Path
+        $lang = Get-RcLanguage -Settings $Settings -FilePath $full
+        if (-not $lang) {
+            return (New-RcResult -ExitCode 2 -Status 'UNSUPPORTED' -Display $DisplayPath)
+        }
+
+        $dest = $null
+        $inPlace = $false
+        if ($OutPath) { $dest = Resolve-RcPath -PathText $OutPath }
+        elseif ($Settings.OutputMode -eq 'inPlace') { $dest = $full; $inPlace = $true }
+        elseif (-not $DryRun) {
+            throw (New-RcError -Code 9 -Message "no output destination: give -OutPath or set output.mode to 'inPlace'")
+        }
+
+        $file = Read-RcTextFile -Path $full -EncodingMode $Settings.EncodingMode
+        $text = $file.Text
+        $tokens = Get-RcComments -Language $lang -Text $text
+        Set-RcKeepFlags -Tokens $tokens -Text $text -Settings $Settings -Language $lang
+        $removed = 0; $kept = 0
+        foreach ($t in $tokens) { if ($t.Keep) { $kept++ } else { $removed++ } }
+        $newText = Convert-RcText -Text $text -Tokens $tokens
+
+        if (-not $DryRun) {
+            $write = $true
+            if ($inPlace -and [string]::Equals($newText, $text, [StringComparison]::Ordinal)) { $write = $false }
+            if ($write) {
+                if ($inPlace -and $Settings.Backup) {
+                    try { [IO.File]::Copy($full, "$full.bak", $true) }
+                    catch { throw (New-RcError -Code 5 -Message "cannot create backup: $($_.Exception.Message)") }
+                }
+                Write-RcTextFile -Path $dest -Text $newText -Encoding $file.Encoding -Bom $file.Bom
+            }
+        }
+        return (New-RcResult -ExitCode 0 -Status 'OK' -Display $DisplayPath -Removed $removed -Kept $kept)
+    }
+    catch {
+        $info = Convert-RcException -ErrorRecord $_
+        return (New-RcResult -ExitCode $info.Code -Status 'ERROR' -Display $DisplayPath -Message (Format-RcMessage -Display $DisplayPath -Info $info))
+    }
+}
+
+function Invoke-RcMain {
+    param([string]$Path, [string]$Config, [string]$OutPath, [switch]$DryRun)
+    Set-StrictMode -Version 2.0
+    $ErrorActionPreference = 'Stop'
+    try {
+        if (-not $Path) {
+            throw (New-RcError -Code 9 -Message 'usage: Remove-Comments.ps1 -Path <file> [-Config <json>] [-OutPath <file>] [-DryRun]')
+        }
+        $settings = Read-RcSettings -ConfigPath $Config
+    }
+    catch {
+        $info = Convert-RcException -ErrorRecord $_
+        return (New-RcResult -ExitCode $info.Code -Status 'ERROR' -Display $Path -Message $info.Message)
+    }
+    return (Invoke-RcFile -Settings $settings -Path $Path -OutPath $OutPath -DryRun:$DryRun -DisplayPath $Path)
+}
+
+if ($MyInvocation.InvocationName -eq '.') { return }
+
+$rcResult = Invoke-RcMain -Path $Path -Config $Config -OutPath $OutPath -DryRun:$DryRun
+[Console]::Out.WriteLine($rcResult.Line)
+if ($rcResult.Message) { [Console]::Error.WriteLine($rcResult.Message) }
+exit $rcResult.ExitCode
