@@ -94,7 +94,7 @@ Test-Case 'lexer: escaped backslash-newline inside string continues it' {
 
 # time limit for perf tests: looser on Windows PowerShell 5.1 (Desktop) / slow CI
 $global:RcPerfLimit = 5
-if ($PSVersionTable.PSEdition -eq 'Desktop') { $global:RcPerfLimit = 15 }
+if ($PSVersionTable.PSEdition -eq 'Desktop' -or ((Test-Path variable:IsWindows) -and $IsWindows)) { $global:RcPerfLimit = 15 }
 
 Test-Case 'perf: ~100KB C++ file' {
     $block = @'
